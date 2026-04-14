@@ -1,0 +1,51 @@
+---
+import Layout from '../layouts/Layout.astro';
+import LeftPanel from '../components/LeftPanel.svelte';
+import RightPanel from '../components/RightPanel.svelte';
+---
+
+<Layout title="Sergey Knyazev — Architect">
+  <div class="split-layout">
+    <div class="panel panel-left" id="panel-docs">
+      <LeftPanel client:load />
+    </div>
+    <div class="panel panel-right" id="panel-interface">
+      <RightPanel client:load />
+    </div>
+  </div>
+
+  <!-- Mobile tab bar (ADR-10) -->
+  <nav class="tab-bar" aria-label="Навигация">
+    <button id="tab-interface" class="active" onclick="switchTab('interface')">
+      Интерфейс
+    </button>
+    <button id="tab-docs" onclick="switchTab('docs')">
+      Документация
+    </button>
+  </nav>
+</Layout>
+
+<script>
+  function switchTab(tab: string) {
+    const panels = document.querySelectorAll('.panel');
+    const buttons = document.querySelectorAll('.tab-bar button');
+
+    panels.forEach(p => p.classList.remove('active'));
+    buttons.forEach(b => b.classList.remove('active'));
+
+    document.getElementById(`panel-${tab}`)?.classList.add('active');
+    document.getElementById(`tab-${tab}`)?.classList.add('active');
+  }
+
+  // На мобильном показываем правую панель по умолчанию (ADR-10)
+  if (window.innerWidth <= 768) {
+    document.getElementById('panel-interface')?.classList.add('active');
+  }
+
+  // Авто-тема: обновляем data-theme при смене системной темы
+  window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', (e) => {
+    if ((localStorage.getItem('theme') || 'auto') === 'auto') {
+      document.documentElement.setAttribute('data-theme', e.matches ? 'light' : 'dark');
+    }
+  });
+</script>
