@@ -8,6 +8,9 @@ author-role: builder
 period: "2017–2019"
 team-size: "7–13"
 tags: [java, fintech, banking, connectors, payments]
+company: "ACI Worldwide"
+title: "Junior Software Engineer"
+cv_description: "Разработка коннекторов к банковским системам для международной платёжной платформы PayON. Первый опыт в enterprise Java и реальных финансовых интеграциях."
 ---
 
 # ACI Worldwide — PayON, платёжная платформа

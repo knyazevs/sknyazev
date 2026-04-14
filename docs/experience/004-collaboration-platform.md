@@ -8,6 +8,9 @@ author-role: decision-maker
 period: "2019–2022"
 team-size: "7–13"
 tags: [real-time, collaboration, webrtc, canvas, saas, backend-lead]
+company: "GXB Ventures"
+title: "Tech Lead / Backend Lead"
+cv_description: "Руководитель backend-команды (7–13 чел.) B2B SaaS-платформы для совместной работы (видео, чат, документы, интерактивная доска). Стабилизация архитектуры продукта, выросшего из MVP. Исследование и раннее внедрение протокола QUIC."
 ---
 
 # Acroplia — All-in-one платформа для бизнес-коллаборации

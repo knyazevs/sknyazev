@@ -8,6 +8,9 @@ author-role: builder
 period: "2019"
 team-size: "3–7"
 tags: [nestjs, backend, media, nodejs, typescript]
+company: "Omega-R"
+title: "Software Engineer"
+cv_description: "Разработка бэкенда сервиса новостей для государственного медиа-агентства. Стек: NestJS, Node.js, TypeScript. Участие на старте проекта — стадия проектирования и начальной разработки."
 ---
 
 # Omega-R — Бэкенд сервиса новостей

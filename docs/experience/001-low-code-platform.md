@@ -8,6 +8,9 @@ author-role: decision-maker
 period: "2022–н.в."
 team-size: "7–13"
 tags: [low-code, platform, rnd, kotlin, java, mobile, architecture]
+company: "МРС"
+title: "Tech Lead / Architect"
+cv_description: "Ключевой технический decision-maker low-code платформы (10+ сервисов). Проектировал архитектуру, внедрил Kotlin Multiplatform для общей бизнес-логики JVM/JS, инициировал переход на Ktor + Exposed. Возглавлял R&D-направление."
 ---
 
 # МРС Платформа — Low-code платформа для быстрой разработки продуктов

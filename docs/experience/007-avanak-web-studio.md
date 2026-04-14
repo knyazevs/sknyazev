@@ -8,6 +8,9 @@ author-role: builder
 period: "2014–2015"
 team-size: "3–7"
 tags: [php, bitrix, web, ecommerce, frontend]
+company: "Avanak"
+title: "Web Developer"
+cv_description: "Разработка корпоративных сайтов и интернет-магазинов на 1С-Битрикс. Первый опыт коммерческой веб-разработки в условиях агентства."
 ---
 
 # Avanak — Веб-разработка на 1С-Битрикс

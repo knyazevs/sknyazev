@@ -1,0 +1,13 @@
+{
+  "name": "sknyazev",
+  "private": true,
+  "scripts": {
+    "build:cv": "bun run scripts/build-cv.ts",
+    "build": "bun run build:cv"
+  },
+  "devDependencies": {
+    "gray-matter": "^4.0.3",
+    "marked": "^18.0.0",
+    "puppeteer": "^24.40.0"
+  }
+}

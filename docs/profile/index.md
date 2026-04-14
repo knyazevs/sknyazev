@@ -1,5 +1,17 @@
 ---
 type: profile
+name: Сергей Князев
+title: Technical Lead / Architect
+birth_year: 1996
+location: Россия
+# Положите фото в private/photo.jpg (или .png) — оно встроится в PDF как base64
+photo: "private/photo.jpg"
+contacts:
+  github: knyazevs
+  linkedin: s-knyazev"
+  telegram: "@sknyazev"
+  email: "s_knyazev@vk.com"
+  phone: "+7(964)862-33-99"
 ---
 
 # Сергей Князев — Технический лидер / Архитектор
