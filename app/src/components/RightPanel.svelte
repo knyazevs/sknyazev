@@ -226,6 +226,12 @@
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
 
+      // Streaming TTS: fire off TTS requests as sentences complete
+      const ttsQueue: Promise<Blob>[] = [];
+      let ttsSentBuffer = '';   // text already sent to TTS
+      let ttsFullText = '';     // accumulates only summary (before ---DETAIL---)
+      let detailStarted = false;
+
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -241,6 +247,30 @@
               fullAnswer += parsed.token;
               streamingText = fullAnswer;
               if (chatMode) await scrollMessages();
+
+              // Track summary portion for TTS (stop at DETAIL marker)
+              if (!detailStarted) {
+                if (fullAnswer.includes(DETAIL_MARKER)) {
+                  detailStarted = true;
+                  ttsFullText = fullAnswer.split(DETAIL_MARKER)[0].trim();
+                } else {
+                  ttsFullText = fullAnswer;
+                }
+
+                // Detect sentence boundary in unsent text and fire TTS
+                if (ttsEnabled) {
+                  const unsent = ttsFullText.slice(ttsSentBuffer.length);
+                  const sentenceEnd = unsent.search(/[.!?。]\s/);
+                  if (sentenceEnd >= 0) {
+                    const sendUpTo = ttsSentBuffer.length + sentenceEnd + 1;
+                    const chunk = ttsFullText.slice(ttsSentBuffer.length, sendUpTo).trim();
+                    if (chunk) {
+                      ttsQueue.push(fetchAudio(chunk));
+                      ttsSentBuffer = ttsFullText.slice(0, sendUpTo);
+                    }
+                  }
+                }
+              }
             }
             if (parsed.sources) {
               pendingSources = parsed.sources;
@@ -255,18 +285,30 @@
         }
       }
 
+      // Send remaining summary text that wasn't sent yet
+      if (ttsEnabled) {
+        const remaining = ttsFullText.slice(ttsSentBuffer.length).trim();
+        if (remaining) {
+          ttsQueue.push(fetchAudio(remaining));
+        }
+      }
+
       history = [...history, { question: questionText, answer: fullAnswer, sources: pendingSources }];
       pendingSources = [];
       streamingText = '';
       persistChat();
       if (chatMode) await scrollMessages();
 
-      if (fullAnswer.trim()) {
-        const { summary } = splitAnswer(fullAnswer);
-        await speakText(summary);
-      } else {
-        state = 'idle';
+      // Play all queued TTS segments sequentially
+      if (ttsEnabled && ttsQueue.length > 0) {
+        state = 'speaking';
+        try {
+          for (const blobPromise of ttsQueue) {
+            await playBlob(await blobPromise);
+          }
+        } catch { /* playback error — ignore */ }
       }
+      state = 'idle';
     } catch (e: unknown) {
       errorMessage = e instanceof Error ? e.message : 'Что-то пошло не так';
       state = 'error';
@@ -306,29 +348,6 @@
     });
   }
 
-  async function speakText(text: string) {
-    if (!ttsEnabled) { state = 'idle'; return; }
-
-    const breakIdx = text.indexOf('\n\n');
-    const firstPart = breakIdx > 0 ? text.slice(0, breakIdx).trim() : text.trim();
-    const restPart = breakIdx > 0 ? text.slice(breakIdx).trim() : '';
-
-    state = 'speaking';
-    try {
-      const firstBlob = fetchAudio(firstPart);
-      const restBlob = restPart ? fetchAudio(restPart) : null;
-
-      await playBlob(await firstBlob);
-
-      if (restBlob) {
-        await playBlob(await restBlob);
-      }
-
-      state = 'idle';
-    } catch {
-      state = 'idle';
-    }
-  }
 
   // ─── ASR ──────────────────────────────────────────────────────────────────
 
@@ -369,8 +388,11 @@
       });
       if (!response.ok) throw new Error(`ASR error: ${response.status}`);
       const { text } = await response.json();
-      state = 'idle';
-      if (text?.trim()) await submitQuery(text.trim());
+      if (text?.trim()) {
+        await submitQuery(text.trim());
+      } else {
+        state = 'idle';
+      }
     } catch {
       errorMessage = 'Ошибка распознавания речи';
       state = 'error';
