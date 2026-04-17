@@ -106,6 +106,11 @@
 
       float f = fbm(p + 3.0*r + t * 0.18);
 
+      // ── Slow veil: low-freq luminance drift (parallax without geometry) ────
+      // Reused below for uneven "breathing" brightness
+      float slow = fbm(uv * 1.2 + vec2(-t * 0.22, t * 0.14));
+      f += slow * 0.18;
+
       // ── Warm amber-chocolate palette ────────────────────────────────────────
       // Remap f (≈ [-0.5, 0.5]) to a nice contrast curve
       float c = clamp(f * 0.85 + 0.55, 0.0, 1.0);
@@ -115,6 +120,7 @@
       vec3 col1 = vec3(0.48, 0.16, 0.025);   // dark amber
       vec3 col2 = vec3(0.82, 0.44, 0.08);    // warm amber
       vec3 col3 = vec3(1.00, 0.78, 0.30);    // bright gold highlight
+      vec3 col4 = vec3(1.00, 0.95, 0.78);    // incandescent core (near-white peach)
 
       vec3 col  = mix(col0, col1, smoothstep(0.00, 0.35, c));
       col       = mix(col,  col2, smoothstep(0.28, 0.65, c));
@@ -124,12 +130,24 @@
       float vein = smoothstep(0.55, 1.0, length(q) * 0.85);
       col += col3 * vein * 0.35;
 
+      // ── Incandescent core ────────────────────────────────────────────────
+      // Tighter Gaussian; cools hue toward white-peach and boosts brightness
+      // only where fluid is already bright → depth via temperature contrast
+      float core    = exp(-rad * rad * k * 5.5);
+      float coreAmt = core * smoothstep(0.35, 1.0, c);
+      col  = mix(col, col4, coreAmt * 0.65);
+      col += col4 * coreAmt * 0.35;
+
       // Subtle dark rim inside the orb edge for depth
       float rim = smoothstep(0.0, 0.3, 1.0 - orb * 3.0);
       col = mix(col, col * 0.35, rim * 0.5);
 
       // State tint
       col = mix(col, col * u_tint, u_tint_str * 0.42);
+
+      // Uneven "breathing" — spatial brightness modulation from slow fbm
+      // Range ≈ [0.90, 1.10]: orb tleet неравномерно, без ритмичного пульса
+      col *= 1.0 + 0.22 * slow;
 
       col *= u_brightness;
 
