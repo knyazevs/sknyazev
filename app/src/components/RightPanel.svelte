@@ -74,6 +74,62 @@
     sessionStorage.setItem(MODE_KEY, '0');
   }
 
+  // ─── Autocomplete ───────────────────────────────────────────────────────────
+
+  let ghostText = $state('');
+  let acAbort: AbortController | null = null;
+  let acTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function clearAutocomplete() {
+    ghostText = '';
+    if (acTimer) { clearTimeout(acTimer); acTimer = null; }
+    if (acAbort) { acAbort.abort(); acAbort = null; }
+  }
+
+  function scheduleAutocomplete(input: string) {
+    clearAutocomplete();
+    const trimmed = input.trim();
+    if (trimmed.length < 3) return;
+
+    // 1) Local prefix match against suggestions + followUps
+    const allHints = [...suggestions, ...followUps];
+    const localMatch = allHints.find(s =>
+      s.toLowerCase().startsWith(trimmed.toLowerCase()) && s.length > trimmed.length
+    );
+    if (localMatch) {
+      ghostText = localMatch.slice(trimmed.length);
+      return;
+    }
+
+    // 2) Server autocomplete with debounce
+    acTimer = setTimeout(async () => {
+      acAbort = new AbortController();
+      try {
+        const res = await fetch(`${BACKEND_URL}/api/autocomplete`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...fpHeaders() },
+          body: JSON.stringify({ input: trimmed }),
+          signal: acAbort.signal,
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        // Only show if input hasn't changed while we waited
+        if (inputText.trim() === trimmed && data.completion) {
+          ghostText = data.completion;
+        }
+      } catch {
+        // aborted or network error — ignore
+      }
+    }, 300);
+  }
+
+  function acceptAutocomplete() {
+    if (!ghostText) return false;
+    inputText = inputText + ghostText;
+    ghostText = '';
+    return true;
+  }
+
   // ─── Suggestions ────────────────────────────────────────────────────────────
 
   const DEFAULT_SUGGESTIONS = [
@@ -144,6 +200,7 @@
     errorMessage = '';
     streamingText = '';
     followUps = [];
+    clearAutocomplete();
     state = 'thinking';
 
     const questionText = question.trim();
@@ -333,7 +390,19 @@
   }
 
   function handleKeydown(e: KeyboardEvent) {
+    if (e.key === 'Tab' && ghostText) {
+      e.preventDefault();
+      acceptAutocomplete();
+      return;
+    }
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSubmit(); }
+    if (e.key === 'Escape' && ghostText) { clearAutocomplete(); }
+  }
+
+  function handleInput(e: Event) {
+    const el = e.currentTarget as HTMLTextAreaElement;
+    autoResize(el);
+    scheduleAutocomplete(inputText);
   }
 
   // ─── Theme ────────────────────────────────────────────────────────────────
@@ -633,17 +702,22 @@
   <!-- ─── Composer ────────────────────────────────────────────────────────── -->
   <div class="composer">
     <div class="composer-inner" class:focused={false}>
-      <textarea
-        bind:this={inputEl}
-        class="composer-input"
-        placeholder="Задайте вопрос…"
-        rows="1"
-        bind:value={inputText}
-        onkeydown={handleKeydown}
-        oninput={(e) => autoResize(e.currentTarget as HTMLTextAreaElement)}
-        disabled={state === 'thinking'}
-        aria-label="Введите вопрос"
-      ></textarea>
+      <div class="input-wrap">
+        {#if ghostText && inputText}
+          <div class="ghost-overlay" aria-hidden="true"><span class="ghost-hidden">{inputText}</span><span class="ghost-completion">{ghostText}</span></div>
+        {/if}
+        <textarea
+          bind:this={inputEl}
+          class="composer-input"
+          placeholder="Задайте вопрос…"
+          rows="1"
+          bind:value={inputText}
+          onkeydown={handleKeydown}
+          oninput={handleInput}
+          disabled={state === 'thinking'}
+          aria-label="Введите вопрос"
+        ></textarea>
+      </div>
       <div class="composer-actions">
         {#if state === 'speaking' || state === 'listening'}
           <button class="action-btn stop-btn" onclick={handleStop} aria-label="Остановить">
@@ -1170,8 +1244,14 @@
     border-color: var(--color-accent);
   }
 
-  .composer-input {
+  .input-wrap {
     flex: 1;
+    position: relative;
+    min-width: 0;
+  }
+
+  .composer-input {
+    width: 100%;
     background: none;
     border: none;
     outline: none;
@@ -1182,10 +1262,35 @@
     resize: none;
     max-height: 120px;
     overflow-y: auto;
+    position: relative;
+    z-index: 1;
   }
 
   .composer-input::placeholder { color: var(--color-text-dim); }
   .composer-input:disabled { opacity: 0.5; }
+
+  .ghost-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.5;
+    pointer-events: none;
+    white-space: pre-wrap;
+    word-break: break-word;
+    z-index: 0;
+  }
+
+  .ghost-hidden {
+    visibility: hidden;
+  }
+
+  .ghost-completion {
+    color: var(--color-text-dim);
+    opacity: 0.5;
+  }
 
   .composer-actions {
     display: flex;

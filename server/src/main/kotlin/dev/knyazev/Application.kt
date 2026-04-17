@@ -86,6 +86,6 @@ fun main() {
         configureSerialization()
         configureCors(config.corsAllowedOrigin)
         configureRateLimit()
-        configureRouting(ragPipeline, openAiClient, questionGuard, suggestionsService)
+        configureRouting(ragPipeline, openAiClient, openRouterClient, questionGuard, suggestionsService)
     }.start(wait = true)
 }
