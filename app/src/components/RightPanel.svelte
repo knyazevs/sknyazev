@@ -520,10 +520,9 @@
   <CosmicOrb {state} />
 </div>
 
-<div class="interface" data-mode={chatMode ? 'chat' : 'inline'}>
-
-  <!-- ─── Header ──────────────────────────────────────────────────────────── -->
-  <header class="top-bar">
+<!-- ─── Header (full-width) ──────────────────────────────────────────────── -->
+<header class="top-bar">
+  <div class="top-bar-inner">
     <div class="identity">
       <span class="name">Sergey Knyazev</span>
       <span class="role">› Technical Lead · Architect<span class="cursor">_</span></span>
@@ -586,7 +585,10 @@
         {/if}
       </button>
     </div>
-  </header>
+  </div>
+</header>
+
+<div class="interface" data-mode={chatMode ? 'chat' : 'inline'}>
 
   {#if chatMode}
     <!-- ═══════════════════════════════════════════════════════════════════════ -->
@@ -788,28 +790,37 @@
   /* ─── Layout ─────────────────────────────────────────────────────────────── */
   /* ═══════════════════════════════════════════════════════════════════════════ */
 
-  .interface {
+  /* ─── Top bar (full-width) ─────────────────── */
+
+  .top-bar {
     position: relative;
     z-index: 1;
     width: 100%;
-    max-width: 680px;
-    height: 100vh;
-    display: flex;
-    flex-direction: column;
-    padding: 0 24px 20px;
-    overflow: hidden;
+    align-self: stretch;
+    flex-shrink: 0;
+    padding: 0 24px;
   }
 
-  /* ─── Top bar ─────────────────────────────── */
-
-  .top-bar {
+  .top-bar-inner {
+    max-width: 760px;
+    margin: 0 auto;
     display: flex;
     align-items: center;
     justify-content: space-between;
     padding: 18px 0 12px;
-    flex-shrink: 0;
-    border-bottom: 1px solid var(--color-border);
-    margin-bottom: 4px;
+  }
+
+  .interface {
+    position: relative;
+    z-index: 1;
+    width: 100%;
+    max-width: 760px;
+    margin: 0 auto;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    padding: 0 24px 20px;
+    overflow: hidden;
   }
 
   .identity {
@@ -1226,7 +1237,6 @@
   .composer {
     flex-shrink: 0;
     padding-top: 10px;
-    border-top: 1px solid var(--color-border);
   }
 
   .composer-inner {
