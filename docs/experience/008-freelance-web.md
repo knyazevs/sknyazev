@@ -8,6 +8,7 @@ author-role: builder
 period: "2013–2014"
 team-size: "1"
 tags: [html, css, php, frontend, freelance]
+cv_skip: true
 ---
 
 # Фриланс — Разработка сайтов

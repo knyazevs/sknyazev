@@ -2,6 +2,8 @@
 dist/
 # generated types
 .astro/
+# generated CV — recreated by `bun run build:cv`
+app/public/cv.pdf
 
 # dependencies
 node_modules/
@@ -22,3 +24,10 @@ pnpm-debug.log*
 
 # jetbrains setting folder
 .idea/
+
+# Gradle build output
+server/build/
+server/.gradle/
+
+# Embedding cache — regenerated automatically, not for VCS
+server/.embedding-cache.json

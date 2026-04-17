@@ -4,12 +4,16 @@ export const GITHUB = {
   branch: "main",
 };
 
+export const BACKEND_URL =
+  import.meta.env.PUBLIC_BACKEND_URL ?? "http://localhost:8080";
+
 // Файлы, которые исключаются из навигации
 export const EXCLUDE_FILES = ["how-to.md"];
 
 // Человекочитаемые названия для директорий
 export const DIR_LABELS: Record<string, string> = {
   adr: "Архитектурные решения",
+  blog: "Блог",
   diagrams: "Диаграммы",
   profile: "Профиль",
   experience: "Опыт",
@@ -25,3 +29,16 @@ export const FILE_LABELS: Record<string, string> = {
   "03-industry-views": "Взгляды на индустрию",
   "04-education": "Образование",
 };
+
+// Кодовый слой — директории для индексации и отображения
+export const CODE_SOURCE_DIRS = ["server/src", "app/src", "scripts"];
+
+export const CODE_EXCLUDED_DIRS = [
+  "node_modules", ".git", "build", "dist", ".gradle",
+  "out", "generated", ".idea", "cache",
+];
+
+export const CODE_INCLUDED_EXTENSIONS = [
+  "kt", "kts", "ts", "mjs", "js", "svelte",
+  "toml", "yml", "yaml", "json", "md", "conf",
+];

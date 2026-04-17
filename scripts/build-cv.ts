@@ -1,12 +1,16 @@
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
 import matter from "gray-matter";
 import puppeteer from "puppeteer";
 
-const ROOT = path.resolve(import.meta.dir, "..");
+// Node-compatible dirname (replaces Bun-only import.meta.dir)
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+const ROOT = path.resolve(__dirname, "..");
 const DOCS = path.join(ROOT, "docs");
-const DIST = path.join(ROOT, "dist");
-const OUT = path.join(DIST, "cv.pdf");
+// Output directly into app/public so Astro serves /cv.pdf on the site
+const OUT = path.join(ROOT, "app", "public", "cv.pdf");
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -30,6 +34,7 @@ interface Experience {
   title?: string;
   period: string;
   cv_description?: string;
+  cv_skip?: boolean;
 }
 
 interface Skill {
@@ -61,7 +66,6 @@ function extractSection(markdown: string, heading: string): string {
 
 /**
  * Parse top-level bullet items from markdown, handling multi-line items.
- * Returns each item as a single string.
  */
 function extractBullets(markdown: string): string[] {
   const items: string[] = [];
@@ -82,7 +86,7 @@ function extractBullets(markdown: string): string[] {
   return items;
 }
 
-/** Extract **bold** terms from markdown: "- **Kotlin** — desc" → "Kotlin" */
+/** Extract **bold** terms from markdown */
 function extractBoldTerms(markdown: string): string[] {
   const terms: string[] = [];
   const re = /\*\*([^*]+)\*\*/g;
@@ -93,23 +97,38 @@ function extractBoldTerms(markdown: string): string[] {
   return terms;
 }
 
+function esc(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 // ─── Data loading ─────────────────────────────────────────────────────────────
 
-function loadProfile(): { meta: Profile; summary: string; strengths: string[] } {
+function loadProfile(): {
+  meta: Profile;
+  summary: string;
+  strengths: string[];
+  lookingFor: string;
+} {
   const { data, content } = readMd(path.join(DOCS, "profile/index.md"));
   const summary = extractSection(content, "Кратко");
 
-  // "Профессиональный фокус" → "Что делаю хорошо" bullet items
   const focusSection = extractSection(content, "Профессиональный фокус");
   const strengthsPart = focusSection.split("**Что не моё:**")[0];
   const strengthsRaw = strengthsPart.replace("**Что делаю хорошо:**", "");
   const strengths = extractBullets(strengthsRaw).map((item) => {
-    // Take only the first phrase (before colon or comma)
     const colonIdx = item.indexOf(":");
     return colonIdx > 0 ? item.substring(0, colonIdx).trim() : item;
   });
 
-  return { meta: data as Profile, summary, strengths };
+  // Load "Что ищу" from the document instead of hardcoding
+  const lookingForRaw = extractSection(content, "Что ищу");
+  const lookingFor = lookingForRaw
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .join(" ");
+
+  return { meta: data as Profile, summary, strengths, lookingFor };
 }
 
 function loadPhoto(photoPath?: string): string | null {
@@ -167,7 +186,7 @@ function loadExperience(): Experience[] {
     .filter((f) => f.endsWith(".md") && f !== "README.md")
     .sort()
     .map((f) => readMd(path.join(dir, f)).data as Experience)
-    .filter((e) => e.company);
+    .filter((e) => e.company && !e.cv_skip);
 }
 
 function loadSkills(): Skill[] {
@@ -178,7 +197,10 @@ function loadSkills(): Skill[] {
     .sort()
     .map((f) => {
       const { data, content } = readMd(path.join(dir, f));
-      return { category: (data as any).category ?? f.replace(".md", ""), content };
+      return {
+        category: (data as any).category ?? f.replace(".md", ""),
+        content,
+      };
     });
 }
 
@@ -191,7 +213,6 @@ const SKILL_NAMES: Record<string, string> = {
   tooling: "Инфраструктура · AI",
 };
 
-// Curated short tags per category; fall back to bold terms from markdown.
 const SKILL_TAGS: Record<string, string[]> = {
   architecture: ["Low-code платформы", "SaaS", "B2B", "ADR / C4", "Greenfield & Legacy", "Миграции без даунтайма"],
   backend: ["Kotlin / KMP", "Java", "TypeScript / Node.js", "PostgreSQL", "Redis", "Ktor · Exposed", "NestJS"],
@@ -203,28 +224,19 @@ const SKILL_TAGS: Record<string, string[]> = {
 
 function renderContacts(contacts: Profile["contacts"]): string {
   const items: string[] = [];
-  if (contacts.phone) items.push(escape(contacts.phone));
+  if (contacts.phone)
+    items.push(esc(contacts.phone));
   if (contacts.email)
-    items.push(`<a href="mailto:${contacts.email}">${contacts.email}</a>`);
+    items.push(`<a href="mailto:${contacts.email}">${esc(contacts.email)}</a>`);
   if (contacts.telegram)
-    items.push(
-      `<a href="https://t.me/${contacts.telegram.replace("@", "")}">${contacts.telegram}</a>`,
-    );
+    items.push(`<a href="https://t.me/${contacts.telegram.replace("@", "")}">${esc(contacts.telegram)}</a>`);
   if (contacts.linkedin)
-    items.push(
-      `<a href="https://${contacts.linkedin}">linkedin.com/in/s-knyazev</a>`,
-    );
+    items.push(`<a href="https://linkedin.com/in/${contacts.linkedin}">linkedin.com/in/${esc(contacts.linkedin)}</a>`);
   if (contacts.github)
-    items.push(
-      `<a href="https://github.com/${contacts.github}">github.com/${contacts.github}</a>`,
-    );
+    items.push(`<a href="https://github.com/${contacts.github}">github.com/${esc(contacts.github)}</a>`);
   return items
     .map((i) => `<span class="ci">${i}</span>`)
     .join('<span class="csep"> · </span>');
-}
-
-function escape(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 function renderExperience(experiences: Experience[]): string {
@@ -234,12 +246,12 @@ function renderExperience(experiences: Experience[]): string {
       <div class="exp">
         <div class="exp-row">
           <div class="exp-left">
-            <span class="exp-co">${escape(e.company!)}</span>
-            ${e.title ? `<span class="exp-role">${escape(e.title)}</span>` : ""}
+            <span class="exp-co">${esc(e.company!)}</span>
+            ${e.title ? `<span class="exp-role">${esc(e.title)}</span>` : ""}
           </div>
-          <span class="exp-period">${escape(e.period)}</span>
+          <span class="exp-period">${esc(e.period)}</span>
         </div>
-        ${e.cv_description ? `<p class="exp-desc">${escape(e.cv_description)}</p>` : ""}
+        ${e.cv_description ? `<p class="exp-desc">${esc(e.cv_description)}</p>` : ""}
       </div>`,
     )
     .join("");
@@ -254,7 +266,7 @@ function renderSkills(skills: Skill[]): string {
         <div class="skill-cat">
           <div class="skill-cat-name">${name}</div>
           <div class="skill-tags">
-            ${tags.map((t) => `<span class="st">${escape(t)}</span>`).join("")}
+            ${tags.map((t) => `<span class="st">${esc(t)}</span>`).join("")}
           </div>
         </div>`;
     })
@@ -274,8 +286,7 @@ function renderEducation(edu: Education): string {
 
   const langs = edu.languages
     .map(
-      (l) =>
-        `<div class="lang"><span>${l.name}</span><span class="lang-lvl">${l.level}</span></div>`,
+      (l) => `<div class="lang"><span>${l.name}</span><span class="lang-lvl">${l.level}</span></div>`,
     )
     .join("");
 
@@ -289,6 +300,7 @@ function buildHtml(
   photoUri: string | null,
   summary: string,
   strengths: string[],
+  lookingFor: string,
   education: Education,
   experiences: Experience[],
   skills: Skill[],
@@ -304,11 +316,11 @@ function buildHtml(
     .split("\n")
     .map((l) => l.trim())
     .filter(Boolean)
-    .map((l) => `<p>${escape(l)}</p>`)
+    .map((l) => `<p>${esc(l)}</p>`)
     .join("");
 
   const strengthsHtml = strengths.length
-    ? `<ul class="str-list">${strengths.map((s) => `<li>${escape(s)}</li>`).join("")}</ul>`
+    ? `<ul class="str-list">${strengths.map((s) => `<li>${esc(s)}</li>`).join("")}</ul>`
     : "";
 
   const chips = [
@@ -318,6 +330,13 @@ function buildHtml(
     "Команды 7–13 чел.",
   ]
     .map((c) => `<span class="chip">${c}</span>`)
+    .join("");
+
+  // Render "Что ищу" from data — single sentence per paragraph
+  const lookingForHtml = lookingFor
+    .split(/\.\s+/)
+    .filter(Boolean)
+    .map((s) => `<p>${esc(s.endsWith(".") ? s : s + ".")}</p>`)
     .join("");
 
   return /* html */ `<!DOCTYPE html>
@@ -501,6 +520,7 @@ function buildHtml(
     font-size: 8pt; color: var(--sub);
     line-height: 1.5; font-style: italic;
   }
+  .looking p + p { margin-top: 3px; }
 </style>
 </head>
 <body>
@@ -509,12 +529,12 @@ function buildHtml(
   <div class="hd">
     ${photoHtml}
     <div class="hd-info">
-      <h1>${escape(profile.name)}</h1>
-      <div class="job-title">${escape(profile.title)}</div>
+      <h1>${esc(profile.name)}</h1>
+      <div class="job-title">${esc(profile.title)}</div>
       <div class="contacts">${renderContacts(profile.contacts)}</div>
     </div>
     <div class="hd-meta">
-      ${age} лет<br>${escape(profile.location)}
+      ${age} лет<br>${esc(profile.location)}
     </div>
   </div>
 
@@ -553,7 +573,7 @@ function buildHtml(
 
       <div class="section">
         <div class="sec-title">Ищу</div>
-        <p class="looking">Роль с реальным влиянием на технические решения. Не исполнитель — человек, с которым советуются перед важными решениями.</p>
+        <div class="looking">${lookingForHtml}</div>
       </div>
 
     </div>
@@ -567,32 +587,40 @@ function buildHtml(
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function main() {
-  console.log("Building CV...");
+  console.log("[cv] Loading data...");
 
-  const { meta: profile, summary, strengths } = loadProfile();
+  const { meta: profile, summary, strengths, lookingFor } = loadProfile();
   const photoUri = loadPhoto(profile.photo);
   const education = loadEducation();
   const experiences = loadExperience();
   const skills = loadSkills();
 
-  const html = buildHtml(profile, photoUri, summary, strengths, education, experiences, skills);
+  console.log(`[cv] ${experiences.length} experience entries, ${skills.length} skill categories`);
 
-  fs.mkdirSync(DIST, { recursive: true });
+  const html = buildHtml(profile, photoUri, summary, strengths, lookingFor, education, experiences, skills);
 
+  // Ensure output directory exists
+  fs.mkdirSync(path.dirname(OUT), { recursive: true });
+
+  console.log("[cv] Launching Chromium...");
   const browser = await puppeteer.launch({
     args: ["--no-sandbox", "--disable-setuid-sandbox"],
   });
-  const page = await browser.newPage();
-  await page.setContent(html, { waitUntil: "networkidle0" });
-  await page.pdf({
-    path: OUT,
-    format: "A4",
-    printBackground: true,
-    margin: { top: "0", right: "0", bottom: "0", left: "0" },
-  });
-  await browser.close();
 
-  console.log(`CV generated → ${path.relative(ROOT, OUT)}`);
+  try {
+    const page = await browser.newPage();
+    await page.setContent(html, { waitUntil: "networkidle0" });
+    await page.pdf({
+      path: OUT,
+      format: "A4",
+      printBackground: true,
+      margin: { top: "0", right: "0", bottom: "0", left: "0" },
+    });
+  } finally {
+    await browser.close();
+  }
+
+  console.log(`[cv] Generated → ${path.relative(ROOT, OUT)}`);
 }
 
 main().catch((err) => {

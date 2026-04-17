@@ -8,7 +8,7 @@ location: Россия
 photo: "private/photo.jpg"
 contacts:
   github: knyazevs
-  linkedin: s-knyazev"
+  linkedin: s-knyazev
   telegram: "@sknyazev"
   email: "s_knyazev@vk.com"
   phone: "+7(964)862-33-99"

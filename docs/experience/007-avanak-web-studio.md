@@ -10,6 +10,7 @@ team-size: "3–7"
 tags: [php, bitrix, web, ecommerce, frontend]
 company: "Avanak"
 title: "Web Developer"
+cv_skip: true
 cv_description: "Разработка корпоративных сайтов и интернет-магазинов на 1С-Битрикс. Первый опыт коммерческой веб-разработки в условиях агентства."
 ---
 

@@ -113,7 +113,7 @@ async function fetchGitHubContent(filePath: string): Promise<string> {
   return res.text();
 }
 
-// ─── Public API ───────────────────────────────────────────────────────────────
+// ─── Public API (docs) ───────────────────────────────────────────────────────
 
 export async function getDocTree(): Promise<DocSection[]> {
   if (import.meta.env.DEV) {
@@ -127,4 +127,104 @@ export async function getDocContent(filePath: string): Promise<string> {
     return fetchLocalContent(filePath);
   }
   return fetchGitHubContent(filePath);
+}
+
+// ─── Public API (code) ───────────────────────────────────────────────────────
+
+export interface CodeFile {
+  path: string;
+  name: string;
+  ext: string;
+  size: number;
+}
+
+export interface CodeDir {
+  path: string;
+  name: string;
+  children: (CodeDir | CodeFile)[];
+}
+
+export async function getCodeTree(): Promise<CodeDir[]> {
+  if (import.meta.env.DEV) {
+    const res = await fetch('/api/code/tree');
+    const data = await res.json();
+    return data.dirs;
+  }
+  // Prod: GitHub API — fetch tree for each source dir
+  return fetchGitHubCodeTree();
+}
+
+export async function getCodeContent(filePath: string): Promise<{ content: string; ext: string }> {
+  if (import.meta.env.DEV) {
+    const res = await fetch(`/api/code/content?path=${encodeURIComponent(filePath)}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    return { content: data.content, ext: data.ext };
+  }
+  // Prod: raw GitHub
+  const { owner, repo, branch } = GITHUB;
+  const url = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${filePath}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Not found: ${filePath}`);
+  const content = await res.text();
+  const ext = filePath.split('.').pop() ?? '';
+  return { content, ext };
+}
+
+async function fetchGitHubCodeTree(): Promise<CodeDir[]> {
+  const { owner, repo } = GITHUB;
+  const sourceDirs = ['server/src', 'app/src', 'scripts'];
+  const results: CodeDir[] = [];
+
+  for (const dir of sourceDirs) {
+    try {
+      const url = `https://api.github.com/repos/${owner}/${repo}/git/trees/HEAD:${dir}?recursive=1`;
+      const res = await fetch(url, { headers: { Accept: 'application/vnd.github.v3+json' } });
+      if (!res.ok) continue;
+      const data = await res.json();
+      results.push(githubTreeToCodeDir(data.tree, dir));
+    } catch { /* skip */ }
+  }
+
+  return results;
+}
+
+function githubTreeToCodeDir(tree: Array<{ path: string; type: string; size?: number }>, rootDir: string): CodeDir {
+  const root: CodeDir = { path: rootDir, name: rootDir.split('/').pop()!, children: [] };
+  const dirs = new Map<string, CodeDir>();
+  dirs.set('', root);
+
+  const INCLUDED_EXT = new Set(['kt', 'kts', 'ts', 'mjs', 'js', 'svelte', 'toml', 'yml', 'yaml', 'json']);
+
+  for (const item of tree) {
+    const ext = item.path.split('.').pop() ?? '';
+    if (item.type === 'blob' && !INCLUDED_EXT.has(ext)) continue;
+
+    const parts = item.path.split('/');
+    const parentPath = parts.slice(0, -1).join('/');
+    const name = parts[parts.length - 1];
+
+    // Ensure parent dirs exist
+    let current = '';
+    for (const part of parts.slice(0, -1)) {
+      const prev = current;
+      current = current ? current + '/' + part : part;
+      if (!dirs.has(current)) {
+        const dir: CodeDir = { path: rootDir + '/' + current, name: part, children: [] };
+        dirs.get(prev)!.children.push(dir);
+        dirs.set(current, dir);
+      }
+    }
+
+    if (item.type === 'blob') {
+      dirs.get(parentPath)!.children.push({
+        path: rootDir + '/' + item.path,
+        name,
+        ext,
+        size: item.size ?? 0,
+      });
+    }
+  }
+
+  return root;
 }

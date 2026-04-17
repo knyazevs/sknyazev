@@ -1,107 +1,604 @@
 <script lang="ts">
-  // State machine (ADR-4, ADR-5)
+  import { onMount, tick } from 'svelte';
+  import { BACKEND_URL } from '../config';
+  import { computeFingerprint } from '../lib/fingerprint';
+  import { marked } from 'marked';
+  import CosmicOrb from './CosmicOrb.svelte';
+  import DocumentModal from './DocumentModal.svelte';
+
+  function renderMd(text: string, sources?: string[]): string {
+    let html = marked.parse(text, { async: false }) as string;
+    if (sources?.length) {
+      // Turn [1], [2] etc. into clickable citation badges
+      html = html.replace(/\[(\d+)\]/g, (match, num) => {
+        const idx = parseInt(num, 10) - 1;
+        if (idx < 0 || idx >= sources.length) return match;
+        return `<button class="cite-badge" data-source-idx="${idx}">${num}</button>`;
+      });
+    }
+    return html;
+  }
+
   type PanelState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'error';
 
+  const DETAIL_MARKER = '---DETAIL---';
+
+  interface Message {
+    question: string;
+    answer: string;
+    sources: string[];
+  }
+
+  function splitAnswer(text: string): { summary: string; detail: string } {
+    const idx = text.indexOf(DETAIL_MARKER);
+    if (idx < 0) return { summary: text.trim(), detail: '' };
+    return {
+      summary: text.slice(0, idx).trim(),
+      detail: text.slice(idx + DETAIL_MARKER.length).trim(),
+    };
+  }
+
   let state: PanelState = $state('idle');
-  let caption = $state('');
   let inputText = $state('');
   let errorMessage = $state('');
+  let streamingText = $state('');
+  let history: Message[] = $state([]);
+  let modalOpen = $state(false);
+  let modalOpenPath = $state<string | null>(null);
+  let pendingSources: string[] = [];
 
-  import CosmicOrb from './CosmicOrb.svelte';
+  let messagesEl: HTMLElement | undefined = $state();
+  let inputEl: HTMLTextAreaElement | undefined = $state();
 
-  // Placeholder: отправка сообщения
-  function handleSubmit() {
-    if (!inputText.trim()) return;
-    const query = inputText.trim();
+  let mediaRecorder: MediaRecorder | null = null;
+  let audioChunks: BlobPart[] = [];
+  let currentAudio: HTMLAudioElement | null = null;
+  let ttsEnabled = $state(true);
+
+  let fingerprint = '';
+
+  const DEFAULT_SUGGESTIONS = [
+    'Какой стек использует Сергей?',
+    'Расскажи про RAG в проекте',
+    'Какой опыт в архитектуре?',
+    'Почему Kotlin/Ktor?',
+  ];
+
+  let suggestions: string[] = $state(DEFAULT_SUGGESTIONS);
+  let followUps: string[] = $state([]);
+  let expandedDetails: Set<number> = $state(new Set());
+
+  const HISTORY_KEY = 'chat-history';
+  const FOLLOWUPS_KEY = 'chat-followups';
+
+  function persistChat() {
+    try {
+      sessionStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+      sessionStorage.setItem(FOLLOWUPS_KEY, JSON.stringify(followUps));
+    } catch { /* quota exceeded — ignore */ }
+  }
+
+  onMount(() => {
+    // Restore chat history synchronously before any async work
+    try {
+      const saved = sessionStorage.getItem(HISTORY_KEY);
+      if (saved) {
+        const parsed: Message[] = JSON.parse(saved);
+        if (parsed.length) history = [...parsed];
+      }
+      const savedFollowUps = sessionStorage.getItem(FOLLOWUPS_KEY);
+      if (savedFollowUps) {
+        const parsed: string[] = JSON.parse(savedFollowUps);
+        if (parsed.length) followUps = [...parsed];
+      }
+    } catch { /* corrupted — start fresh */ }
+
+    ttsEnabled = localStorage.getItem('tts') !== 'off';
+
+    // Async work — fingerprint + server suggestions
+    (async () => {
+      fingerprint = await computeFingerprint();
+      try {
+        const res = await fetch(`${BACKEND_URL}/api/suggestions`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.suggestions?.length) suggestions = data.suggestions;
+        }
+      } catch { /* use defaults */ }
+    })();
+  });
+
+  function fpHeaders(): Record<string, string> {
+    return fingerprint ? { 'X-Fingerprint': fingerprint } : {};
+  }
+
+  async function scrollMessages() {
+    await tick();
+    if (messagesEl) {
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+  }
+
+  // ─── Chat ─────────────────────────────────────────────────────────────────
+
+  async function submitQuery(question: string) {
+    if (!question.trim() || state === 'thinking') return;
     inputText = '';
-    caption = '';
+    errorMessage = '';
+    streamingText = '';
+    followUps = [];
     state = 'thinking';
 
-    // TODO: вызов backend API (ADR-8)
-    setTimeout(() => {
+    const questionText = question.trim();
+    await scrollMessages();
+
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...fpHeaders() },
+        body: JSON.stringify({ question: questionText }),
+      });
+
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error ?? `Server error: ${response.status}`);
+      }
+      if (!response.body) {
+        throw new Error(`Server error: ${response.status}`);
+      }
+
       state = 'speaking';
-      caption = `Ответ на: "${query}" — интеграция с LLM в разработке.`;
-      setTimeout(() => {
+      let fullAnswer = '';
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        for (const line of chunk.split('\n')) {
+          if (!line.startsWith('data: ')) continue;
+          const data = line.slice(6).trim();
+          if (data === '[DONE]') break;
+          try {
+            const parsed = JSON.parse(data);
+            if (parsed.token) {
+              fullAnswer += parsed.token;
+              streamingText = fullAnswer;
+              await scrollMessages();
+            }
+            if (parsed.sources) {
+              pendingSources = parsed.sources;
+            }
+            if (parsed.suggestions) {
+              followUps = parsed.suggestions;
+            }
+            if (parsed.error) throw new Error(parsed.error);
+          } catch {
+            // partial JSON — skip
+          }
+        }
+      }
+
+      history = [...history, { question: questionText, answer: fullAnswer, sources: pendingSources }];
+      pendingSources = [];
+      streamingText = '';
+      persistChat();
+      await scrollMessages();
+
+      if (fullAnswer.trim()) {
+        const { summary } = splitAnswer(fullAnswer);
+        await speakText(summary);
+      } else {
         state = 'idle';
-        caption = '';
-      }, 3000);
-    }, 1200);
+      }
+    } catch (e: unknown) {
+      errorMessage = e instanceof Error ? e.message : 'Что-то пошло не так';
+      state = 'error';
+    }
+  }
+
+  async function handleSubmit() {
+    const q = inputText.trim();
+    if (!q || state === 'thinking') return;
+    await submitQuery(q);
+  }
+
+  // ─── TTS ────────────────────────────────────────────────────────���─────────
+
+  function toggleTts() {
+    ttsEnabled = !ttsEnabled;
+    localStorage.setItem('tts', ttsEnabled ? 'on' : 'off');
+  }
+
+  async function fetchAudio(text: string): Promise<Blob> {
+    const response = await fetch(`${BACKEND_URL}/api/tts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...fpHeaders() },
+      body: JSON.stringify({ text }),
+    });
+    if (!response.ok) throw new Error(`TTS error: ${response.status}`);
+    return response.blob();
+  }
+
+  function playBlob(blob: Blob): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(blob);
+      currentAudio = new Audio(url);
+      currentAudio.onended = () => { URL.revokeObjectURL(url); currentAudio = null; resolve(); };
+      currentAudio.onerror = () => { URL.revokeObjectURL(url); currentAudio = null; reject(); };
+      currentAudio.play().catch(reject);
+    });
+  }
+
+  /**
+   * Two-stage TTS: speak the first paragraph immediately while
+   * the rest loads in the background → eliminates the gap.
+   */
+  async function speakText(text: string) {
+    if (!ttsEnabled) { state = 'idle'; return; }
+
+    // Split at first double-newline (paragraph break)
+    const breakIdx = text.indexOf('\n\n');
+    const firstPart = breakIdx > 0 ? text.slice(0, breakIdx).trim() : text.trim();
+    const restPart = breakIdx > 0 ? text.slice(breakIdx).trim() : '';
+
+    state = 'speaking';
+    try {
+      // Start fetching both parts in parallel, but play first part as soon as it's ready
+      const firstBlob = fetchAudio(firstPart);
+      const restBlob = restPart ? fetchAudio(restPart) : null;
+
+      await playBlob(await firstBlob);
+
+      if (restBlob) {
+        await playBlob(await restBlob);
+      }
+
+      state = 'idle';
+    } catch {
+      state = 'idle';
+    }
+  }
+
+  // ─── ASR ──────────────────────────────────────────────────────────────────
+
+  async function handleMic() {
+    if (state === 'listening') { stopRecording(); return; }
+    if (state !== 'idle') return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioChunks = [];
+      mediaRecorder = new MediaRecorder(stream);
+      mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data); };
+      mediaRecorder.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        await transcribeAudio(new Blob(audioChunks, { type: 'audio/webm' }));
+      };
+      mediaRecorder.start();
+      state = 'listening';
+    } catch {
+      errorMessage = 'Нет доступа к микрофону';
+      state = 'error';
+    }
+  }
+
+  function stopRecording() {
+    mediaRecorder?.stop();
+    mediaRecorder = null;
+    state = 'thinking';
+  }
+
+  async function transcribeAudio(blob: Blob) {
+    try {
+      const fd = new FormData();
+      fd.append('audio', blob, 'audio.webm');
+      const response = await fetch(`${BACKEND_URL}/api/asr`, {
+        method: 'POST',
+        headers: { ...fpHeaders() },
+        body: fd,
+      });
+      if (!response.ok) throw new Error(`ASR error: ${response.status}`);
+      const { text } = await response.json();
+      state = 'idle';
+      if (text?.trim()) await submitQuery(text.trim());
+    } catch {
+      errorMessage = 'Ошибка распознавания речи';
+      state = 'error';
+    }
+  }
+
+  // ─── Stop ─────────────────────────────────────────────────────────────────
+
+  function handleStop() {
+    currentAudio?.pause();
+    currentAudio = null;
+    mediaRecorder?.stop();
+    mediaRecorder = null;
+    state = 'idle';
+    streamingText = '';
+    errorMessage = '';
   }
 
   function handleKeydown(e: KeyboardEvent) {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSubmit();
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSubmit(); }
+  }
+
+  // ─── Theme ────────────────────────────────────────────────────────────────
+
+  type ThemeMode = 'auto' | 'light' | 'dark';
+  let themeMode: ThemeMode = $state('auto');
+
+  onMount(() => {
+    themeMode = (localStorage.getItem('theme') as ThemeMode) || 'auto';
+  });
+
+  function toggleTheme() {
+    const cycle: ThemeMode[] = ['auto', 'light', 'dark'];
+    themeMode = cycle[(cycle.indexOf(themeMode) + 1) % 3];
+    localStorage.setItem('theme', themeMode);
+    const sys = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', themeMode === 'auto' ? sys : themeMode);
+  }
+
+  // ─── Textarea auto-grow ────────────────────────────────────────────────────
+
+  function autoResize(el: HTMLTextAreaElement) {
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+  }
+
+  // ─── Sources ──────────────────────────────────────────────────────────────
+
+  function isCodeSource(src: string) { return src.startsWith('code/'); }
+
+  function sourceLabel(src: string): string {
+    const name = src.split('/').pop() ?? src;
+    if (src.startsWith('code/')) return name;
+    const base = name.replace(/\.md$/, '');
+    const m = base.match(/^(\d+)-(.+)$/);
+    if (m) {
+      const dir = src.split('/')[0];
+      if (dir === 'adr') return `ADR-${parseInt(m[1], 10)}`;
+      return m[2].replace(/-/g, ' ').replace(/^\w/, c => c.toUpperCase());
+    }
+    return base.replace(/-/g, ' ').replace(/^\w/, c => c.toUpperCase());
+  }
+
+  function openSourceDoc(src: string) {
+    if (isCodeSource(src)) {
+      window.location.href = `/code#${src.slice(5)}`;
+      return;
+    }
+    modalOpenPath = src;
+    modalOpen = true;
+  }
+
+  function handleMessagesClick(e: MouseEvent) {
+    const target = e.target as HTMLElement;
+
+    // Citation badge [1], [2], ...
+    const badge = target.closest('.cite-badge') as HTMLElement | null;
+    if (badge) {
+      const idx = parseInt(badge.dataset.sourceIdx ?? '', 10);
+      const msgEl = badge.closest('.msg');
+      if (!msgEl) return;
+      const msgIndex = Array.from(messagesEl?.querySelectorAll('.msg') ?? []).indexOf(msgEl);
+      if (msgIndex < 0 || msgIndex >= history.length) return;
+      const src = history[msgIndex].sources?.[idx];
+      if (src) openSourceDoc(src);
+      return;
+    }
+
+    // Inline doc/code links generated by LLM in markdown
+    const link = target.closest('a') as HTMLAnchorElement | null;
+    if (link) {
+      const href = link.getAttribute('href') ?? '';
+      // Skip external links
+      if (/^https?:\/\//.test(href) && !href.includes(window.location.host)) return;
+      // Extract doc path: strip leading /, strip host, normalise
+      const docPath = href
+        .replace(/^https?:\/\/[^/]+/, '')
+        .replace(/^\//, '');
+      if (!docPath) return;
+      // Looks like a doc or code source path
+      if (/\.(md|kt|ts|svelte|css|json|toml|yaml|yml|tsx|jsx|js)$/.test(docPath)) {
+        e.preventDefault();
+        if (docPath.startsWith('code/') || docPath.startsWith('server/') || docPath.startsWith('app/') || docPath.startsWith('scripts/')) {
+          const codePath = docPath.startsWith('code/') ? docPath : `code/${docPath}`;
+          openSourceDoc(codePath);
+        } else {
+          openSourceDoc(docPath);
+        }
+      }
     }
   }
 
-  // Mic: placeholder до интеграции Whisper
-  function handleMic() {
-    if (state === 'listening') {
-      state = 'idle';
-    } else if (state === 'idle') {
-      state = 'listening';
-    }
-  }
-
-  function handleStop() {
-    state = 'idle';
-    caption = '';
-  }
-
-  const stateLabel: Record<PanelState, string> = {
-    idle: '',
+  const stateHints: Partial<Record<PanelState, string>> = {
     listening: 'Слушаю…',
-    thinking: 'Формирую ответ…',
-    speaking: '',
-    error: '',
+    thinking:  'Думаю…',
   };
 </script>
 
-<div class="right-panel-inner" data-state={state}>
+<!-- ─── Full-screen orb background (decoration only, no pointer events) ── -->
+<div class="orb-bg" aria-hidden="true">
+  <CosmicOrb {state} />
+</div>
 
-  <!-- Сцена: космическая визуальная сущность -->
-  <div class="scene">
-    <div class="orb-wrap" aria-hidden="true">
-      <CosmicOrb {state} />
+<div class="interface" data-state={state}>
+
+  <!-- ─── Header ──────────────────────────────────────────────────────────── -->
+  <header class="top-bar">
+    <div class="identity">
+      <span class="name">Sergey Knyazev</span>
+      <span class="role">› Technical Lead · Architect<span class="cursor">_</span></span>
     </div>
-    <div class="interface-hint" class:hidden={state !== 'idle'}>
-      голосовой интерфейс · задайте вопрос о системе
+    <div class="top-actions">
+      <a class="icon-btn" href="/timeline" aria-label="История проекта" title="История">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <circle cx="12" cy="12" r="10"/>
+          <polyline points="12 6 12 12 16 14"/>
+        </svg>
+      </a>
+      <a class="icon-btn" href="/code" aria-label="Код проекта" title="Код">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="16 18 22 12 16 6"/>
+          <polyline points="8 6 2 12 8 18"/>
+        </svg>
+      </a>
+      <button class="icon-btn" onclick={() => modalOpen = true} aria-label="Документация" title="Документация">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
+          <line x1="16" y1="13" x2="8" y2="13"/>
+          <line x1="16" y1="17" x2="8" y2="17"/>
+          <line x1="10" y1="9" x2="8" y2="9"/>
+        </svg>
+      </button>
+      <button class="icon-btn" onclick={toggleTheme} aria-label="Тема">
+        {#if themeMode === 'light'}
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <circle cx="12" cy="12" r="5"/>
+            <line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/>
+            <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+            <line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/>
+            <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+          </svg>
+        {:else if themeMode === 'dark'}
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3a7 7 0 0 0 9.79 9.79z"/>
+          </svg>
+        {:else}
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <circle cx="12" cy="12" r="5"/>
+            <line x1="12" y1="1" x2="12" y2="3"/>
+            <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+            <line x1="1" y1="12" x2="3" y2="12"/>
+            <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+            <line x1="12" y1="21" x2="12" y2="23"/>
+            <path d="M17 12a5 5 0 0 1-5 5" stroke-dasharray="2 2"/>
+          </svg>
+        {/if}
+      </button>
     </div>
-    {#if state === 'thinking' || state === 'listening'}
-      <div class="state-hint">{stateLabel[state]}</div>
+  </header>
+
+  <!-- ─── Messages ────────────────────────────────────────────────────────── -->
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="messages" bind:this={messagesEl} onclick={handleMessagesClick}>
+    {#each history as msg, i}
+      {@const parts = splitAnswer(msg.answer)}
+      <div class="msg">
+        <div class="msg-question">{msg.question}</div>
+        <div class="msg-answer md">{@html renderMd(parts.summary, msg.sources)}</div>
+        {#if parts.detail}
+          {#if expandedDetails.has(i)}
+            <div class="msg-detail md">{@html renderMd(parts.detail, msg.sources)}</div>
+            <button class="detail-toggle" onclick={() => { expandedDetails.delete(i); expandedDetails = new Set(expandedDetails); }}>
+              Свернуть
+            </button>
+          {:else}
+            <button class="detail-toggle" onclick={() => { expandedDetails.add(i); expandedDetails = new Set(expandedDetails); }}>
+              Подробнее
+            </button>
+          {/if}
+        {/if}
+        {#if msg.sources?.length}
+          <div class="msg-sources">
+            {#each msg.sources as src, si}
+              <button class="source-chip" onclick={() => openSourceDoc(src)}>
+                <span class="source-num">{si + 1}</span>
+                {sourceLabel(src)}
+              </button>
+            {/each}
+          </div>
+        {/if}
+      </div>
+    {/each}
+    {#if streamingText}
+      {@const streamParts = splitAnswer(streamingText)}
+      <div class="msg">
+        <div class="msg-answer md streaming">{@html renderMd(streamParts.summary)}<span class="stream-cursor">▊</span></div>
+      </div>
     {/if}
-  </div>
-
-  <!-- Субтитры -->
-  <div class="captions" role="status" aria-live="polite">
     {#if state === 'error'}
-      <span class="caption-error">{errorMessage || 'Что-то пошло не так. Попробуйте ещё раз.'}</span>
-    {:else}
-      {caption}
+      <div class="msg">
+        <div class="msg-error">{errorMessage || 'Что-то пошло не так. Попробуйте ещё раз.'}</div>
+      </div>
     {/if}
   </div>
 
-  <!-- Composer: ввод -->
+  <!-- ─── State hint (orb is rendered as full-screen bg, see below) ──────── -->
+  <div class="orb-hint">
+    {#if stateHints[state]}
+      <div class="state-hint">{stateHints[state]}</div>
+    {:else if history.length === 0 && state === 'idle'}
+      <div class="state-hint welcome">Интерактивное портфолио Сергея Князева — Technical Lead / Architect. Задайте вопрос об опыте, стеке или проектах, выберите подсказку или используйте микрофон.</div>
+    {/if}
+  </div>
+
+  <!-- ─── Suggestions ──────────────────────────────────────────────────────── -->
+  {#if state === 'idle'}
+    {#if history.length === 0}
+      <div class="suggestions" role="list">
+        {#each suggestions as s}
+          <button class="chip" role="listitem" onclick={() => submitQuery(s)}>{s}</button>
+        {/each}
+      </div>
+    {:else if followUps.length > 0}
+      <div class="suggestions" role="list">
+        {#each followUps as s}
+          <button class="chip" role="listitem" onclick={() => submitQuery(s)}>{s}</button>
+        {/each}
+      </div>
+    {/if}
+  {/if}
+
+  <!-- ─── Composer ────────────────────────────────────────────────────────── -->
   <div class="composer">
-    <div class="composer-inner">
+    <div class="composer-inner" class:focused={false}>
       <textarea
+        bind:this={inputEl}
         class="composer-input"
         placeholder="Задайте вопрос…"
         rows="1"
         bind:value={inputText}
         onkeydown={handleKeydown}
+        oninput={(e) => autoResize(e.currentTarget as HTMLTextAreaElement)}
         disabled={state === 'thinking'}
         aria-label="Введите вопрос"
       ></textarea>
       <div class="composer-actions">
         {#if state === 'speaking' || state === 'listening'}
           <button class="action-btn stop-btn" onclick={handleStop} aria-label="Остановить">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
               <rect x="3" y="3" width="10" height="10" rx="1"/>
             </svg>
           </button>
         {:else}
+          <button
+            class="action-btn tts-btn"
+            class:off={!ttsEnabled}
+            onclick={toggleTts}
+            aria-label={ttsEnabled ? 'Отключить озвучивание' : 'Включить озвучивание'}
+            title={ttsEnabled ? 'Озвучивание вкл.' : 'Озвучивание выкл.'}
+          >
+            {#if ttsEnabled}
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" fill="currentColor"/>
+                <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+                <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+              </svg>
+            {:else}
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" fill="currentColor"/>
+                <line x1="23" y1="9" x2="17" y2="15"/>
+                <line x1="17" y1="9" x2="23" y2="15"/>
+              </svg>
+            {/if}
+          </button>
           <button
             class="action-btn mic-btn"
             class:active={state === 'listening'}
@@ -109,7 +606,7 @@
             aria-label="Голосовой ввод"
             disabled={state === 'thinking'}
           >
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
               <rect x="5" y="1" width="6" height="9" rx="3"/>
               <path d="M2.5 8a5.5 5.5 0 0 0 11 0" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/>
               <line x1="8" y1="13.5" x2="8" y2="15.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
@@ -121,7 +618,7 @@
             aria-label="Отправить"
             disabled={state === 'thinking' || !inputText.trim()}
           >
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
               <path d="M2 8L14 2L10 8L14 14L2 8Z"/>
             </svg>
           </button>
@@ -131,78 +628,376 @@
   </div>
 </div>
 
+<!-- ─── Document Modal ───────────────────────────────────────────────────── -->
+<DocumentModal
+  open={modalOpen}
+  openPath={modalOpenPath}
+  onclose={() => { modalOpen = false; modalOpenPath = null; }}
+/>
+
 <style>
-  .right-panel-inner {
+  .interface {
+    position: relative;
+    z-index: 1;
+    width: 100%;
+    max-width: 680px;
+    height: 100vh;
     display: flex;
     flex-direction: column;
-    height: 100vh;
-    padding: 24px;
-  }
-
-  /* ─── Scene ──────────────────────────────────── */
-
-  .scene {
-    flex: 1;
-    position: relative;
+    padding: 0 24px 20px;
     overflow: hidden;
   }
 
-  .orb-wrap {
-    width: 100%;
-    height: 100%;
+  /* ─── Top bar ─────────────────────────────── */
+
+  .top-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 0 12px;
+    flex-shrink: 0;
+    border-bottom: 1px solid var(--color-border);
+    margin-bottom: 4px;
   }
 
-  .interface-hint {
-    position: absolute;
-    bottom: 20px;
-    left: 50%;
-    transform: translateX(-50%);
+  .identity {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .name {
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--color-text-heading);
+    letter-spacing: -0.01em;
+    text-shadow: 0 0 40px var(--color-accent-glow);
+  }
+
+  .role {
     font-size: 10px;
+    color: var(--color-accent);
     font-family: var(--font-mono);
-    color: var(--color-hint);
-    letter-spacing: 0.12em;
-    white-space: nowrap;
-    pointer-events: none;
-    transition: opacity 0.6s ease;
+    letter-spacing: 0.06em;
+    opacity: 0.75;
+    display: flex;
+    align-items: center;
+    gap: 4px;
   }
 
-  .interface-hint.hidden {
-    opacity: 0;
+  .cursor {
+    animation: blink 1.2s step-end infinite;
+    color: var(--color-accent);
+  }
+
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0; }
+  }
+
+  .top-actions {
+    display: flex;
+    gap: 8px;
+  }
+
+  .icon-btn {
+    width: 30px;
+    height: 30px;
+    border-radius: 7px;
+    border: 1px solid var(--color-border);
+    background: none;
+    color: var(--color-text-dim);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: color var(--transition), border-color var(--transition);
+  }
+
+  .icon-btn:hover {
+    color: var(--color-accent);
+    border-color: var(--color-accent);
+  }
+
+  /* ─── Messages ────────────────────────────── */
+
+  .messages {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 12px 0 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    scrollbar-gutter: stable;
+    /* Slight backdrop so text is readable over the orb glow */
+    mask-image: linear-gradient(to bottom, transparent 0%, black 48px);
+  }
+
+  .msg {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .state-hint.welcome {
+    font-size: 12px;
+    line-height: 1.6;
+    letter-spacing: 0.02em;
+    max-width: 360px;
+    text-align: center;
+    height: auto;
+    color: var(--color-text-dim);
+  }
+
+  .msg-question {
+    align-self: flex-end;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: 12px 12px 3px 12px;
+    padding: 9px 14px;
+    font-size: 14px;
+    color: var(--color-text);
+    max-width: 85%;
+  }
+
+  .msg-answer {
+    align-self: flex-start;
+    font-size: 14px;
+    line-height: 1.75;
+    color: var(--color-text);
+    max-width: 100%;
+  }
+
+  /* markdown rendered content */
+  .msg-answer.md :global(p)          { margin: 0 0 10px; }
+  .msg-answer.md :global(p:last-child) { margin-bottom: 0; }
+  .msg-answer.md :global(ul),
+  .msg-answer.md :global(ol)         { padding-left: 18px; margin: 0 0 10px; }
+  .msg-answer.md :global(li)         { margin: 3px 0; }
+  .msg-answer.md :global(strong)     { color: var(--color-text-heading); font-weight: 600; }
+  .msg-answer.md :global(em)         { font-style: italic; }
+  .msg-answer.md :global(h1),
+  .msg-answer.md :global(h2),
+  .msg-answer.md :global(h3)         { font-size: 14px; font-weight: 600; color: var(--color-text-heading); margin: 14px 0 6px; }
+  .msg-answer.md :global(code)       { font-family: var(--font-mono); font-size: 12px; background: var(--color-surface-hover); padding: 1px 5px; border-radius: 3px; color: var(--color-accent); }
+  .msg-answer.md :global(pre)        { background: var(--color-surface-hover); border: 1px solid var(--color-border); border-radius: 6px; padding: 10px 12px; overflow-x: auto; margin: 0 0 10px; }
+  .msg-answer.md :global(pre code)   { background: none; padding: 0; color: var(--color-text); font-size: 12px; }
+  .msg-answer.md :global(blockquote) { border-left: 2px solid var(--color-accent); margin: 0 0 10px; padding: 2px 10px; color: var(--color-text-dim); font-style: italic; }
+  .msg-answer.md :global(hr)         { border: none; border-top: 1px solid var(--color-border); margin: 12px 0; }
+  .msg-answer.md :global(a)          { color: var(--color-accent); text-decoration: none; }
+  .msg-answer.md :global(a:hover)    { text-decoration: underline; }
+
+  .msg-answer.streaming {
+    color: var(--color-text-heading);
+  }
+
+  .stream-cursor {
+    display: inline-block;
+    color: var(--color-accent);
+    animation: blink 0.8s step-end infinite;
+    margin-left: 1px;
+  }
+
+  /* ─── Inline citation badges [1] [2] ──── */
+
+  .msg-answer.md :global(.cite-badge),
+  .msg-detail.md :global(.cite-badge) {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: none;
+    background: var(--color-accent);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    font-family: var(--font-mono);
+    cursor: pointer;
+    vertical-align: super;
+    margin: 0 1px;
+    line-height: 1;
+    transition: background var(--transition), transform var(--transition);
+  }
+
+  .msg-answer.md :global(.cite-badge:hover),
+  .msg-detail.md :global(.cite-badge:hover) {
+    background: var(--color-send-hover);
+    transform: scale(1.15);
+  }
+
+  /* ─── Source chips (below answer) ──────── */
+
+  .msg-sources {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 6px;
+    padding-top: 8px;
+    border-top: 1px solid var(--color-border);
+  }
+
+  .source-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--color-border);
+    background: var(--color-surface);
+    color: var(--color-text);
+    font-size: 12px;
+    font-family: var(--font-mono);
+    cursor: pointer;
+    text-decoration: none;
+    transition: color var(--transition), border-color var(--transition), background var(--transition);
+  }
+
+  .source-chip:hover {
+    color: var(--color-accent);
+    border-color: var(--color-accent);
+    background: var(--color-accent-glow);
+  }
+
+  .source-num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--color-accent);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+
+  .msg-detail {
+    align-self: flex-start;
+    font-size: 14px;
+    line-height: 1.75;
+    color: var(--color-text);
+    max-width: 100%;
+    padding-top: 8px;
+    border-top: 1px solid var(--color-border);
+    animation: fadeIn 0.3s ease;
+  }
+
+  /* Reuse .msg-answer markdown styles for detail blocks */
+  .msg-detail.md :global(p)          { margin: 0 0 10px; }
+  .msg-detail.md :global(p:last-child) { margin-bottom: 0; }
+  .msg-detail.md :global(ul),
+  .msg-detail.md :global(ol)         { padding-left: 18px; margin: 0 0 10px; }
+  .msg-detail.md :global(li)         { margin: 3px 0; }
+  .msg-detail.md :global(strong)     { color: var(--color-text-heading); font-weight: 600; }
+  .msg-detail.md :global(code)       { font-family: var(--font-mono); font-size: 12px; background: var(--color-surface-hover); padding: 1px 5px; border-radius: 3px; color: var(--color-accent); }
+  .msg-detail.md :global(pre)        { background: var(--color-surface-hover); border: 1px solid var(--color-border); border-radius: 6px; padding: 10px 12px; overflow-x: auto; margin: 0 0 10px; }
+  .msg-detail.md :global(pre code)   { background: none; padding: 0; color: var(--color-text); font-size: 12px; }
+  .msg-detail.md :global(a)          { color: var(--color-accent); text-decoration: none; }
+  .msg-detail.md :global(a:hover)    { text-decoration: underline; }
+
+  .detail-toggle {
+    align-self: flex-start;
+    background: none;
+    border: none;
+    color: var(--color-accent);
+    font-size: 12px;
+    font-family: var(--font-mono);
+    cursor: pointer;
+    padding: 2px 0;
+    opacity: 0.8;
+    transition: opacity var(--transition);
+  }
+
+  .detail-toggle:hover {
+    opacity: 1;
+    text-decoration: underline;
+  }
+
+  .msg-error {
+    font-size: 13px;
+    color: var(--color-error);
+    font-family: var(--font-mono);
+  }
+
+  /* ─── Orb background (full-screen canvas layer) ──────────────────── */
+
+  .orb-bg {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* ─── State hint (centered, floats over orb) ─────────────────────── */
+
+  .orb-hint {
+    flex-shrink: 0;
+    display: flex;
+    justify-content: center;
+    padding: 6px 0 10px;
+    pointer-events: none;
   }
 
   .state-hint {
-    position: absolute;
-    bottom: 20px;
-    left: 50%;
-    transform: translateX(-50%);
-    font-size: 11px;
+    font-size: 10px;
     font-family: var(--font-mono);
     color: var(--color-state-hint);
     letter-spacing: 0.08em;
-    pointer-events: none;
+    height: 16px;
+    transition: opacity 0.4s ease;
+  }
+
+  .state-hint.faint {
+    color: var(--color-hint);
+    letter-spacing: 0.12em;
+    font-size: 9px;
+  }
+
+  /* ─── Suggestions ─────────────────────────── */
+
+  .suggestions {
+    flex-shrink: 0;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+    padding: 10px 0 8px;
+    animation: fadeIn 0.4s ease;
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(4px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .chip {
+    padding: 6px 14px;
+    border-radius: 20px;
+    border: 1px solid var(--color-border);
+    background: var(--color-surface);
+    color: var(--color-text-dim);
+    font-size: 12px;
+    font-family: var(--font-sans);
+    cursor: pointer;
+    transition: color var(--transition), border-color var(--transition), background var(--transition);
     white-space: nowrap;
   }
 
-  /* ─── Captions ───────────────────────────────── */
-
-  .captions {
-    min-height: 48px;
-    text-align: center;
-    font-size: 14px;
+  .chip:hover {
     color: var(--color-text);
-    line-height: 1.6;
-    padding: 0 16px 16px;
+    border-color: var(--color-accent);
+    background: var(--color-accent-glow);
   }
 
-  .caption-error {
-    color: var(--color-error);
-    font-size: 13px;
-  }
-
-  /* ─── Composer ───────────────────────────────── */
+  /* ─── Composer ────────────────────────────── */
 
   .composer {
-    padding-top: 12px;
+    flex-shrink: 0;
+    padding-top: 10px;
     border-top: 1px solid var(--color-border);
   }
 
@@ -212,7 +1007,7 @@
     gap: 8px;
     background: var(--color-surface);
     border: 1px solid var(--color-border);
-    border-radius: 12px;
+    border-radius: 14px;
     padding: 10px 12px;
     transition: border-color var(--transition);
   }
@@ -232,15 +1027,11 @@
     line-height: 1.5;
     resize: none;
     max-height: 120px;
+    overflow-y: auto;
   }
 
-  .composer-input::placeholder {
-    color: var(--color-text-dim);
-  }
-
-  .composer-input:disabled {
-    opacity: 0.5;
-  }
+  .composer-input::placeholder { color: var(--color-text-dim); }
+  .composer-input:disabled { opacity: 0.5; }
 
   .composer-actions {
     display: flex;
@@ -249,8 +1040,8 @@
   }
 
   .action-btn {
-    width: 32px;
-    height: 32px;
+    width: 30px;
+    height: 30px;
     border-radius: 8px;
     border: none;
     display: flex;
@@ -260,49 +1051,29 @@
     transition: background var(--transition), color var(--transition), opacity var(--transition);
   }
 
-  .action-btn:disabled {
-    opacity: 0.35;
-    cursor: default;
+  .action-btn:disabled { opacity: 0.35; cursor: default; }
+
+  .tts-btn {
+    background: var(--color-surface-hover);
+    color: var(--color-accent);
   }
+  .tts-btn:hover { color: var(--color-text); background: var(--color-border); }
+  .tts-btn.off { color: var(--color-text-dim); opacity: 0.5; }
+  .tts-btn.off:hover { opacity: 0.8; }
 
   .mic-btn {
     background: var(--color-surface-hover);
     color: var(--color-text-dim);
   }
+  .mic-btn:hover:not(:disabled) { color: var(--color-text); background: var(--color-border); }
+  .mic-btn.active { background: var(--color-mic-bg); color: var(--color-mic-fg); }
 
-  .mic-btn:hover:not(:disabled) {
-    color: var(--color-text);
-    background: var(--color-border);
-  }
-
-  .mic-btn.active {
-    background: var(--color-mic-bg);
-    color: var(--color-mic-fg);
-  }
-
-  .send-btn {
-    background: var(--color-accent);
-    color: #fff;
-  }
-
-  .send-btn:hover:not(:disabled) {
-    background: var(--color-send-hover);
-  }
+  .send-btn { background: var(--color-accent); color: #fff; }
+  .send-btn:hover:not(:disabled) { background: var(--color-send-hover); }
 
   .stop-btn {
     background: color-mix(in srgb, var(--color-error) 15%, transparent);
     color: var(--color-error);
   }
-
-  .stop-btn:hover {
-    background: rgba(255, 123, 123, 0.25);
-  }
-
-  /* ─── Reduce motion ──────────────────────────── */
-
-  @media (prefers-reduced-motion: reduce) {
-    .entity-ring, .entity-core {
-      animation: none !important;
-    }
-  }
+  .stop-btn:hover { background: rgba(255, 123, 123, 0.25); }
 </style>

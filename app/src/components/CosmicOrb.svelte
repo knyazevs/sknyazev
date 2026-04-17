@@ -10,19 +10,26 @@
   let canvas: HTMLCanvasElement;
   let animFrame: number;
 
-  const PARAMS: Record<OrbState, { speed: number; brightness: number; tint: [number,number,number]; tintStr: number; pulse: number; size: number }> = {
-    idle:      { speed: 0.50, brightness: 1.10, tint: [0.75, 0.82, 1.00], tintStr: 0.45, pulse: 0.0, size: 1.00 },
-    listening: { speed: 1.10, brightness: 1.40, tint: [0.30, 1.00, 0.55], tintStr: 0.50, pulse: 1.0, size: 1.10 },
-    thinking:  { speed: 2.00, brightness: 1.25, tint: [0.40, 0.72, 1.00], tintStr: 0.45, pulse: 0.5, size: 1.05 },
-    speaking:  { speed: 0.85, brightness: 1.70, tint: [0.80, 0.68, 1.00], tintStr: 0.45, pulse: 1.0, size: 1.15 },
-    error:     { speed: 0.30, brightness: 0.90, tint: [1.00, 0.28, 0.28], tintStr: 0.60, pulse: 0.0, size: 0.90 },
+  // State → shader parameters
+  const PARAMS: Record<OrbState, {
+    speed: number; brightness: number;
+    tint: [number,number,number]; tintStr: number;
+    pulse: number; size: number;
+  }> = {
+    idle:      { speed: 0.32, brightness: 1.00, tint: [1.00, 0.72, 0.38], tintStr: 0.15, pulse: 0.0, size: 1.00 },
+    listening: { speed: 0.85, brightness: 1.30, tint: [0.45, 1.00, 0.55], tintStr: 0.55, pulse: 1.0, size: 1.08 },
+    thinking:  { speed: 1.90, brightness: 1.15, tint: [1.00, 0.62, 0.22], tintStr: 0.35, pulse: 0.4, size: 1.04 },
+    speaking:  { speed: 0.60, brightness: 1.55, tint: [1.00, 0.85, 0.45], tintStr: 0.38, pulse: 0.9, size: 1.12 },
+    error:     { speed: 0.22, brightness: 0.82, tint: [1.00, 0.18, 0.08], tintStr: 0.72, pulse: 0.0, size: 0.90 },
   };
 
+  // ── Vertex shader ──────────────────────────────────────────────────────────
   const VS = `#version 300 es
     in vec2 a_pos;
     void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }
   `;
 
+  // ── Fragment shader: warm domain-warped fluid ──────────────────────────────
   const FS = `#version 300 es
     precision highp float;
 
@@ -38,131 +45,115 @@
 
     out vec4 fragColor;
 
-    #define ITER       15
-    #define FPARAM     0.53
-    #define VSTEPS     20
-    #define SSTEP      0.1
-    #define ZOOM       0.800
-    #define TILE       0.850
-    #define BRIGHT     0.0015
-    #define DARKMATTER 0.300
-    #define DFADE      0.730
-    #define SAT        0.850
+    // ── Gradient noise ────────────────────────────────────────────────────────
+    vec2 hash2(vec2 p) {
+      p = vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)));
+      return -1.0 + 2.0 * fract(sin(p) * 43758.5453);
+    }
 
-    mat2 rot2(float a) { float s=sin(a),c=cos(a); return mat2(c,-s,s,c); }
+    float gnoise(vec2 p) {
+      vec2 i = floor(p);
+      vec2 f = fract(p);
+      vec2 u = f * f * (3.0 - 2.0 * f);
+      return mix(
+        mix(dot(hash2(i            ), f            ),
+            dot(hash2(i + vec2(1,0)), f - vec2(1,0)), u.x),
+        mix(dot(hash2(i + vec2(0,1)), f - vec2(0,1)),
+            dot(hash2(i + vec2(1,1)), f - vec2(1,1)), u.x), u.y);
+    }
 
-    vec4 starfield(vec3 ro, vec3 rd) {
-      float s = 0.1, fade = 1.0;
-      vec3 v = vec3(0.0);
-      for (int r = 0; r < VSTEPS; r++) {
-        vec3 p = ro + s*rd*0.5;
-        p = abs(vec3(TILE) - mod(p, vec3(TILE*2.0)));
-        float pa = 0.0, a = 0.0;
-        for (int i = 0; i < ITER; i++) {
-          p   = abs(p)/dot(p,p) - FPARAM;
-          p.xy *= rot2(iTime * u_speed * 0.0015);
-          a  += abs(length(p) - pa);
-          pa  = length(p);
-        }
-        float dm = max(0.0, DARKMATTER - a*a*0.001);
-        a = a*a*a;
-        if (r > 6) fade *= 1.3 - dm;
-        v += fade;
-        v += vec3(s, s*s, s*s*s*s) * a * BRIGHT * fade;
-        fade *= DFADE;
-        s   += SSTEP;
-      }
-      v = mix(vec3(length(v)), v, SAT);
-      return vec4(v * 0.03, 1.0);
+    // Rotation matrix for FBM octave twist
+    const mat2 ROT = mat2(0.80, 0.60, -0.60, 0.80);
+
+    float fbm(vec2 p) {
+      float f = 0.0;
+      f += 0.5000 * gnoise(p); p = ROT * p * 2.02;
+      f += 0.2500 * gnoise(p); p = ROT * p * 2.03;
+      f += 0.1250 * gnoise(p); p = ROT * p * 2.01;
+      f += 0.0625 * gnoise(p);
+      return f / 0.9375;
     }
 
     void main() {
-      vec2 fc = gl_FragCoord.xy;
-      vec2 uv = fc/iResolution - 0.5;
-      uv.y  *= iResolution.y/iResolution.x;
+      vec2 uv = gl_FragCoord.xy / iResolution - 0.5;
+      uv.y *= iResolution.y / iResolution.x;
 
-      float r     = length(uv);
-      float angle = atan(uv.y, uv.x);
+      float rad = length(uv);
 
-      // Турбулентность масштабируется с расстоянием:
-      // в центре = 0, на краях = максимум → ядро чистое, граница растворяется
-      float turb = 0.0;
-      turb += 0.028 * sin(angle * 2.0 + iTime * u_speed * 0.38 + 1.30);
-      turb += 0.020 * sin(angle * 5.0 - iTime * u_speed * 0.61 + 2.70);
-      turb += 0.014 * sin(angle * 9.0 + iTime * u_speed * 0.95 + 0.50);
-      turb += 0.009 * sin(angle * 15.0 - iTime * u_speed * 0.44 + 4.10);
-      turb += 0.006 * sin(angle * 24.0 + iTime * u_speed * 1.30 + 1.80);
-      turb += 0.010 * sin(r * 10.0 - iTime * u_speed * 0.60 + 3.20);
-      // Чем дальше от центра, тем сильнее рвёт контур
-      float edgeScale = smoothstep(0.0, 0.28 * u_size, r);
-      turb *= edgeScale * 1.8;
+      // ── Orb shape (Gaussian falloff + pulse) ────────────────────────────────
+      float pulse   = 1.0 + 0.07 * u_pulse * (0.5 + 0.5 * sin(iTime * u_speed * 2.2));
+      float k       = 88.0 / (u_size * u_size * pulse * pulse);
+      float orb     = exp(-rad * rad * k);
+      float orbHard = smoothstep(0.0, 0.012, orb);  // crisp interior mask
 
-      float effectiveR = r + turb;
-
-      // Гауссовый спад: центр = 1.0, края = почти 0, никакой чёткой границы
-      // k контролирует ширину: больше k = компактнее, резче спад у краёв
-      float baseK = 112.0;
-      float k = baseK / (u_size * u_size);
-      // При пульсе слегка расширяем
-      float pulseExpand = 1.0 + 0.08 * u_pulse * (0.5 + 0.5 * sin(iTime * u_speed * 2.1));
-      float falloff = exp(-effectiveR * effectiveR * k / (pulseExpand * pulseExpand));
-
-      // Ранний выход там где точно ничего не будет видно
-      if (falloff < 0.004) {
+      // Early exit far from any visible region
+      if (orb < 0.003 && rad > u_size * 0.9) {
         fragColor = vec4(u_bg, 1.0);
         return;
       }
 
-      // ── Космос ─────────────────────────────────────────────────────────────
-      vec3 dir = vec3(uv * ZOOM, 1.0);
+      // ── Domain-warped fluid ─────────────────────────────────────────────────
+      float t = iTime * u_speed * 0.22;
+      vec2  p = uv * 3.6;
 
-      float t3 = iTime*u_speed*0.1
-               + (0.25 + 0.05*sin(iTime*0.1)) / (length(uv) + 0.07) * 1.2;
-      mat2 ma = mat2(cos(t3), sin(t3), -sin(t3), cos(t3));
+      // First warp layer
+      vec2 q = vec2(fbm(p + t * 0.70),
+                    fbm(p + vec2(5.2, 1.3) + t * 0.55));
 
-      vec2  u2 = abs(fc + fc - iResolution) / iResolution.y;
-      vec2  v2 = iResolution;
-      vec4  z  = vec4(1.0, 2.0, 3.0, 0.0);
-      vec4  o  = z;
-      float a4 = 0.5;
-      float t4 = iTime * u_speed * 0.1;
+      // Second warp layer (deeper)
+      vec2 r = vec2(fbm(p + 3.5*q + vec2(1.7, 9.2) + t * 0.42),
+                    fbm(p + 3.5*q + vec2(8.3, 2.8) + t * 0.35));
 
-      for (float i = 1.0; i < 13.0; i += 1.0) {
-        t4 += 1.0;
-        a4 += 0.03;
-        vec4 cv = cos(i + 0.02*t4 - vec4(0.0, 11.0, 33.0, 0.0));
-        u2 *= mat2(cv[0], cv[1], cv[2], cv[3]);
-        v2   = cos(t4 - 7.0*u2*pow(a4, i)) - 0.1*u2;
-        u2  += tanh(400.0 * dot(u2,u2) * cos(100.0*u2.yx + t4)) / 200.0
-             + 0.2 * a4 * u2
-             + cos(4.0/exp(dot(o,o)/100.0) + t4) / 300.0;
-        u2.xy *= ma;
-        float dv    = dot(v2, v2);
-        float duu   = dot(u2, u2);
-        vec2  arg   = 1.5*u2 / max(0.5 - duu, 1e-4) - 10.0*u2.yx + t4;
-        float denom = length((1.0 + i*dv) * sin(arg));
-        o += (1.0 + cos(z + t4)) / max(denom, 1e-5);
-      }
+      float f = fbm(p + 3.0*r + t * 0.18);
 
-      o = 25.6 / (min(o, 13.0) + 164.0/max(o, 1e-5)) - dot(u2,u2)/250.0;
+      // ── Warm amber-chocolate palette ────────────────────────────────────────
+      // Remap f (≈ [-0.5, 0.5]) to a nice contrast curve
+      float c = clamp(f * 0.85 + 0.55, 0.0, 1.0);
+      c = c * c * (3.0 - 2.0 * c);  // extra smoothstep contrast
 
-      vec4 stars = starfield(vec3(1.0, 0.5, 0.5), dir);
-      // o при малом весе добавляет цветовую вариацию без заметных лучей
-      vec4 cosmos = stars * mix(vec4(1.0), clamp(o, 0.1, 2.0), 0.15);
-      cosmos.rgb *= u_brightness;
-      cosmos.rgb  = mix(cosmos.rgb, cosmos.rgb * u_tint, max(u_tint_str, 0.20));
+      vec3 col0 = vec3(0.04, 0.015, 0.003);  // charred brown (shadow)
+      vec3 col1 = vec3(0.48, 0.16, 0.025);   // dark amber
+      vec3 col2 = vec3(0.82, 0.44, 0.08);    // warm amber
+      vec3 col3 = vec3(1.00, 0.78, 0.30);    // bright gold highlight
 
-      // Reinhard tone mapping — предотвращает клиппинг в белый при любой яркости
-      cosmos.rgb /= (cosmos.rgb + vec3(1.0));
+      vec3 col  = mix(col0, col1, smoothstep(0.00, 0.35, c));
+      col       = mix(col,  col2, smoothstep(0.28, 0.65, c));
+      col       = mix(col,  col3, smoothstep(0.58, 1.00, c));
 
-      // На тёмном фоне сущность светлее bg, на светлом — темнее (тёмная туманность)
-      float bgLum    = dot(u_bg, vec3(0.299, 0.587, 0.114));
-      float lumBoost = mix(2.8, 1.0, smoothstep(0.3, 0.7, bgLum));
-      cosmos.rgb *= lumBoost;
+      // Bright veins where warp distortion is strongest
+      float vein = smoothstep(0.55, 1.0, length(q) * 0.85);
+      col += col3 * vein * 0.35;
 
-      // mix() — плавный переход к bg без клиппинга
-      fragColor.rgb = mix(u_bg, cosmos.rgb, falloff);
-      fragColor.a   = 1.0;
+      // Subtle dark rim inside the orb edge for depth
+      float rim = smoothstep(0.0, 0.3, 1.0 - orb * 3.0);
+      col = mix(col, col * 0.35, rim * 0.5);
+
+      // State tint
+      col = mix(col, col * u_tint, u_tint_str * 0.42);
+
+      col *= u_brightness;
+
+      // Reinhard + mild gamma
+      col  = col / (col + vec3(0.72));
+      col  = pow(clamp(col, 0.0, 1.0), vec3(0.90));
+
+      // ── Atmospheric glow around the orb ─────────────────────────────────────
+      float glowFalloff = exp(-rad * rad * 16.0 / (u_size * u_size));
+      vec3  glowCol     = vec3(0.52, 0.18, 0.03) * u_brightness * 0.55;
+      // Tint the glow too
+      glowCol = mix(glowCol, glowCol * u_tint, u_tint_str * 0.3);
+
+      // ── Atmospheric background warmth ────────────────────────────────────────
+      // Subtle warm vignette centered on screen — replaces CSS body::before
+      float vignette = exp(-rad * rad * 1.4);
+      vec3 bgWarm = u_bg + vec3(0.018, 0.008, 0.001) * vignette;
+
+      // ── Composite ────────────────────────────────────────────────────────────
+      vec3 result = bgWarm;
+      result      = mix(result, col, orb);
+      result     += glowCol * glowFalloff * (1.0 - orb * 0.65) * 0.85;
+
+      fragColor = vec4(clamp(result, 0.0, 1.0), 1.0);
     }
   `;
 
@@ -174,9 +165,8 @@
       const s = gl!.createShader(type)!;
       gl!.shaderSource(s, src);
       gl!.compileShader(s);
-      if (!gl!.getShaderParameter(s, gl!.COMPILE_STATUS)) {
+      if (!gl!.getShaderParameter(s, gl!.COMPILE_STATUS))
         console.error('Shader error:', gl!.getShaderInfoLog(s));
-      }
       return s;
     }
 
@@ -209,21 +199,17 @@
       bg:         gl.getUniformLocation(prog, 'u_bg'),
     };
 
+    // Match warm bg colors from global.css
     const getBg = () =>
       document.documentElement.getAttribute('data-theme') === 'light'
-        ? [0.957, 0.957, 0.980] as number[]
-        : [0.039, 0.039, 0.059] as number[];
+        ? [0.984, 0.961, 0.910] as number[]   // #FBF5E8
+        : [0.047, 0.035, 0.020] as number[];   // #0C0905
 
     let bgColor = getBg();
-
     const themeObserver = new MutationObserver(() => { bgColor = getBg(); });
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
 
-    let cur = {
-      speed: 0.50, brightness: 2.20,
-      tint: [0.75, 0.82, 1.0] as number[],
-      tintStr: 0.0, pulse: 0.0, size: 1.0
-    };
+    let cur = { ...PARAMS.idle, tint: [...PARAMS.idle.tint] as number[] };
     const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
     const start = performance.now();
 
@@ -231,7 +217,7 @@
       animFrame = requestAnimationFrame(frame);
 
       const tgt = PARAMS[_s];
-      const k = 0.02;
+      const k   = 0.022;
       cur.speed      = lerp(cur.speed,      tgt.speed,      k);
       cur.brightness = lerp(cur.brightness, tgt.brightness, k);
       cur.tintStr    = lerp(cur.tintStr,    tgt.tintStr,    k);
@@ -240,8 +226,8 @@
       for (let i = 0; i < 3; i++) cur.tint[i] = lerp(cur.tint[i], tgt.tint[i], k);
 
       const dpr = devicePixelRatio;
-      const w = Math.round(canvas.clientWidth  * dpr);
-      const h = Math.round(canvas.clientHeight * dpr);
+      const w   = Math.round(canvas.clientWidth  * dpr);
+      const h   = Math.round(canvas.clientHeight * dpr);
       if (canvas.width !== w || canvas.height !== h) {
         canvas.width = w; canvas.height = h;
         gl!.viewport(0, 0, w, h);
@@ -249,15 +235,14 @@
 
       const t = (performance.now() - start) / 1000;
       gl!.uniform2f(U.res, canvas.width, canvas.height);
-      gl!.uniform1f(U.time, t);
-      gl!.uniform1f(U.speed, cur.speed);
+      gl!.uniform1f(U.time,       t);
+      gl!.uniform1f(U.speed,      cur.speed);
       gl!.uniform1f(U.brightness, cur.brightness);
-      gl!.uniform3fv(U.tint, cur.tint);
-      gl!.uniform1f(U.tintStr, cur.tintStr);
-      gl!.uniform1f(U.pulse, cur.pulse);
-      gl!.uniform1f(U.size, cur.size);
-      gl!.uniform3fv(U.bg, bgColor);
-
+      gl!.uniform3fv(U.tint,      cur.tint);
+      gl!.uniform1f(U.tintStr,    cur.tintStr);
+      gl!.uniform1f(U.pulse,      cur.pulse);
+      gl!.uniform1f(U.size,       cur.size);
+      gl!.uniform3fv(U.bg,        bgColor);
       gl!.drawArrays(gl!.TRIANGLE_STRIP, 0, 4);
     }
 
