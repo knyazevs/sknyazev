@@ -9,7 +9,6 @@
   function renderMd(text: string, sources?: string[]): string {
     let html = marked.parse(text, { async: false }) as string;
     if (sources?.length) {
-      // Turn [1], [2] etc. into clickable citation badges
       html = html.replace(/\[(\d+)\]/g, (match, num) => {
         const idx = parseInt(num, 10) - 1;
         if (idx < 0 || idx >= sources.length) return match;
@@ -57,6 +56,26 @@
 
   let fingerprint = '';
 
+  // ─── View mode ──────────────────────────────────────────────────────────────
+  let chatMode = $state(false);
+  let expandedDetails: Set<number> = $state(new Set());
+
+  const MODE_KEY = 'chat-mode';
+
+  function openChatMode() {
+    chatMode = true;
+    sessionStorage.setItem(MODE_KEY, '1');
+    // Scroll to bottom after mode switch
+    tick().then(scrollMessages);
+  }
+
+  function closeChatMode() {
+    chatMode = false;
+    sessionStorage.setItem(MODE_KEY, '0');
+  }
+
+  // ─── Suggestions ────────────────────────────────────────────────────────────
+
   const DEFAULT_SUGGESTIONS = [
     'Какой стек использует Сергей?',
     'Расскажи про RAG в проекте',
@@ -66,7 +85,6 @@
 
   let suggestions: string[] = $state(DEFAULT_SUGGESTIONS);
   let followUps: string[] = $state([]);
-  let expandedDetails: Set<number> = $state(new Set());
 
   const HISTORY_KEY = 'chat-history';
   const FOLLOWUPS_KEY = 'chat-followups';
@@ -79,7 +97,6 @@
   }
 
   onMount(() => {
-    // Restore chat history synchronously before any async work
     try {
       const saved = sessionStorage.getItem(HISTORY_KEY);
       if (saved) {
@@ -91,11 +108,11 @@
         const parsed: string[] = JSON.parse(savedFollowUps);
         if (parsed.length) followUps = [...parsed];
       }
+      chatMode = sessionStorage.getItem(MODE_KEY) === '1';
     } catch { /* corrupted — start fresh */ }
 
     ttsEnabled = localStorage.getItem('tts') !== 'off';
 
-    // Async work — fingerprint + server suggestions
     (async () => {
       fingerprint = await computeFingerprint();
       try {
@@ -130,7 +147,7 @@
     state = 'thinking';
 
     const questionText = question.trim();
-    await scrollMessages();
+    if (chatMode) await scrollMessages();
 
     try {
       const response = await fetch(`${BACKEND_URL}/api/chat`, {
@@ -166,7 +183,7 @@
             if (parsed.token) {
               fullAnswer += parsed.token;
               streamingText = fullAnswer;
-              await scrollMessages();
+              if (chatMode) await scrollMessages();
             }
             if (parsed.sources) {
               pendingSources = parsed.sources;
@@ -185,7 +202,7 @@
       pendingSources = [];
       streamingText = '';
       persistChat();
-      await scrollMessages();
+      if (chatMode) await scrollMessages();
 
       if (fullAnswer.trim()) {
         const { summary } = splitAnswer(fullAnswer);
@@ -205,7 +222,7 @@
     await submitQuery(q);
   }
 
-  // ─── TTS ────────────────────────────────────────────────────────���─────────
+  // ─── TTS ──────────────────────────────────────────────────────────────────
 
   function toggleTts() {
     ttsEnabled = !ttsEnabled;
@@ -232,21 +249,15 @@
     });
   }
 
-  /**
-   * Two-stage TTS: speak the first paragraph immediately while
-   * the rest loads in the background → eliminates the gap.
-   */
   async function speakText(text: string) {
     if (!ttsEnabled) { state = 'idle'; return; }
 
-    // Split at first double-newline (paragraph break)
     const breakIdx = text.indexOf('\n\n');
     const firstPart = breakIdx > 0 ? text.slice(0, breakIdx).trim() : text.trim();
     const restPart = breakIdx > 0 ? text.slice(breakIdx).trim() : '';
 
     state = 'speaking';
     try {
-      // Start fetching both parts in parallel, but play first part as soon as it's ready
       const firstBlob = fetchAudio(firstPart);
       const restBlob = restPart ? fetchAudio(restPart) : null;
 
@@ -375,34 +386,37 @@
     modalOpen = true;
   }
 
-  function handleMessagesClick(e: MouseEvent) {
+  function handleContentClick(e: MouseEvent) {
     const target = e.target as HTMLElement;
 
-    // Citation badge [1], [2], ...
     const badge = target.closest('.cite-badge') as HTMLElement | null;
     if (badge) {
       const idx = parseInt(badge.dataset.sourceIdx ?? '', 10);
-      const msgEl = badge.closest('.msg');
-      if (!msgEl) return;
-      const msgIndex = Array.from(messagesEl?.querySelectorAll('.msg') ?? []).indexOf(msgEl);
-      if (msgIndex < 0 || msgIndex >= history.length) return;
-      const src = history[msgIndex].sources?.[idx];
-      if (src) openSourceDoc(src);
+      // In chat mode, find which .msg it belongs to
+      if (chatMode) {
+        const msgEl = badge.closest('.msg');
+        if (!msgEl || !messagesEl) return;
+        const msgIndex = Array.from(messagesEl.querySelectorAll('.msg')).indexOf(msgEl);
+        if (msgIndex < 0 || msgIndex >= history.length) return;
+        const src = history[msgIndex].sources?.[idx];
+        if (src) openSourceDoc(src);
+      } else {
+        // Inline mode — last message
+        const last = history[history.length - 1];
+        const src = last?.sources?.[idx];
+        if (src) openSourceDoc(src);
+      }
       return;
     }
 
-    // Inline doc/code links generated by LLM in markdown
     const link = target.closest('a') as HTMLAnchorElement | null;
     if (link) {
       const href = link.getAttribute('href') ?? '';
-      // Skip external links
       if (/^https?:\/\//.test(href) && !href.includes(window.location.host)) return;
-      // Extract doc path: strip leading /, strip host, normalise
       const docPath = href
         .replace(/^https?:\/\/[^/]+/, '')
         .replace(/^\//, '');
       if (!docPath) return;
-      // Looks like a doc or code source path
       if (/\.(md|kt|ts|svelte|css|json|toml|yaml|yml|tsx|jsx|js)$/.test(docPath)) {
         e.preventDefault();
         if (docPath.startsWith('code/') || docPath.startsWith('server/') || docPath.startsWith('app/') || docPath.startsWith('scripts/')) {
@@ -419,14 +433,25 @@
     listening: 'Слушаю…',
     thinking:  'Думаю…',
   };
+
+  // ─── Derived ──────────────────────────────────────────────────────────────
+
+  let lastMsg = $derived(history.length > 0 ? history[history.length - 1] : null);
+  let activeSuggestions = $derived(
+    history.length === 0
+      ? suggestions
+      : followUps.length > 0
+        ? followUps
+        : suggestions
+  );
 </script>
 
-<!-- ─── Full-screen orb background (decoration only, no pointer events) ── -->
-<div class="orb-bg" aria-hidden="true">
+<!-- ─── Full-screen orb background ──────────────────────────────────────── -->
+<div class="orb-bg" class:chat-mode={chatMode} aria-hidden="true">
   <CosmicOrb {state} />
 </div>
 
-<div class="interface" data-state={state}>
+<div class="interface" data-mode={chatMode ? 'chat' : 'inline'}>
 
   <!-- ─── Header ──────────────────────────────────────────────────────────── -->
   <header class="top-bar">
@@ -435,6 +460,16 @@
       <span class="role">› Technical Lead · Architect<span class="cursor">_</span></span>
     </div>
     <div class="top-actions">
+      {#if chatMode}
+        <button class="icon-btn" onclick={closeChatMode} aria-label="Свернуть чат" title="Свернуть">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <polyline points="4 14 10 14 10 20"/>
+            <polyline points="20 10 14 10 14 4"/>
+            <line x1="14" y1="10" x2="21" y2="3"/>
+            <line x1="3" y1="21" x2="10" y2="14"/>
+          </svg>
+        </button>
+      {/if}
       <a class="icon-btn" href="/timeline" aria-label="История проекта" title="История">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
           <circle cx="12" cy="12" r="10"/>
@@ -484,76 +519,115 @@
     </div>
   </header>
 
-  <!-- ─── Messages ────────────────────────────────────────────────────────── -->
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="messages" bind:this={messagesEl} onclick={handleMessagesClick}>
-    {#each history as msg, i}
-      {@const parts = splitAnswer(msg.answer)}
-      <div class="msg">
-        <div class="msg-question">{msg.question}</div>
-        <div class="msg-answer md">{@html renderMd(parts.summary, msg.sources)}</div>
-        {#if parts.detail}
-          {#if expandedDetails.has(i)}
-            <div class="msg-detail md">{@html renderMd(parts.detail, msg.sources)}</div>
-            <button class="detail-toggle" onclick={() => { expandedDetails.delete(i); expandedDetails = new Set(expandedDetails); }}>
-              Свернуть
-            </button>
-          {:else}
-            <button class="detail-toggle" onclick={() => { expandedDetails.add(i); expandedDetails = new Set(expandedDetails); }}>
-              Подробнее
-            </button>
-          {/if}
-        {/if}
-        {#if msg.sources?.length}
-          <div class="msg-sources">
-            {#each msg.sources as src, si}
-              <button class="source-chip" onclick={() => openSourceDoc(src)}>
-                <span class="source-num">{si + 1}</span>
-                {sourceLabel(src)}
+  {#if chatMode}
+    <!-- ═══════════════════════════════════════════════════════════════════════ -->
+    <!-- ─── CHAT MODE ─────────────────────────────────────────────────────── -->
+    <!-- ═══════════════════════════════════════════════════════════════════════ -->
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="messages" bind:this={messagesEl} onclick={handleContentClick}>
+      {#each history as msg, i}
+        {@const parts = splitAnswer(msg.answer)}
+        <div class="msg">
+          <div class="msg-question">{msg.question}</div>
+          <div class="msg-answer md">{@html renderMd(parts.summary, msg.sources)}</div>
+          {#if parts.detail}
+            {#if expandedDetails.has(i)}
+              <div class="msg-detail md">{@html renderMd(parts.detail, msg.sources)}</div>
+              <button class="detail-toggle" onclick={() => { expandedDetails.delete(i); expandedDetails = new Set(expandedDetails); }}>
+                Свернуть
               </button>
-            {/each}
-          </div>
-        {/if}
-      </div>
-    {/each}
-    {#if streamingText}
-      {@const streamParts = splitAnswer(streamingText)}
-      <div class="msg">
-        <div class="msg-answer md streaming">{@html renderMd(streamParts.summary)}<span class="stream-cursor">▊</span></div>
-      </div>
-    {/if}
-    {#if state === 'error'}
-      <div class="msg">
-        <div class="msg-error">{errorMessage || 'Что-то пошло не так. Попробуйте ещё раз.'}</div>
-      </div>
-    {/if}
-  </div>
+            {:else}
+              <button class="detail-toggle" onclick={() => { expandedDetails.add(i); expandedDetails = new Set(expandedDetails); }}>
+                Подробнее
+              </button>
+            {/if}
+          {/if}
+          {#if msg.sources?.length}
+            <div class="msg-sources">
+              {#each msg.sources as src, si}
+                <button class="source-chip" onclick={() => openSourceDoc(src)}>
+                  <span class="source-num">{si + 1}</span>
+                  {sourceLabel(src)}
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      {/each}
+      {#if streamingText}
+        {@const streamParts = splitAnswer(streamingText)}
+        <div class="msg">
+          <div class="msg-answer md streaming">{@html renderMd(streamParts.summary)}<span class="stream-cursor">▊</span></div>
+        </div>
+      {/if}
+      {#if state === 'error'}
+        <div class="msg">
+          <div class="msg-error">{errorMessage || 'Что-то пошло не так. Попробуйте ещё раз.'}</div>
+        </div>
+      {/if}
+    </div>
 
-  <!-- ─── State hint (orb is rendered as full-screen bg, see below) ──────── -->
-  <div class="orb-hint">
-    {#if stateHints[state]}
-      <div class="state-hint">{stateHints[state]}</div>
-    {:else if history.length === 0 && state === 'idle'}
-      <div class="state-hint welcome">Интерактивное портфолио Сергея Князева — Technical Lead / Architect. Задайте вопрос об опыте, стеке или проектах, выберите подсказку или используйте микрофон.</div>
-    {/if}
-  </div>
+  {:else}
+    <!-- ═══════════════════════════════════════════════════════════════════════ -->
+    <!-- ─── INLINE MODE ───────────────────────────────────────────────────── -->
+    <!-- ═══════════════════════════════════════════════════════════════════════ -->
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="inline-area" onclick={handleContentClick}>
+
+      {#if stateHints[state]}
+        <!-- State hint: thinking / listening -->
+        <div class="orb-hint">
+          <div class="state-hint">{stateHints[state]}</div>
+        </div>
+      {:else if streamingText}
+        <!-- Streaming answer -->
+        {@const streamParts = splitAnswer(streamingText)}
+        <div class="inline-answer">
+          <div class="msg-answer md streaming">{@html renderMd(streamParts.summary)}<span class="stream-cursor">▊</span></div>
+        </div>
+      {:else if lastMsg}
+        <!-- Last answer (inline) -->
+        {@const parts = splitAnswer(lastMsg.answer)}
+        <div class="inline-answer">
+          <div class="inline-question">{lastMsg.question}</div>
+          <div class="msg-answer md">{@html renderMd(parts.summary, lastMsg.sources)}</div>
+        </div>
+      {:else}
+        <!-- Welcome -->
+        <div class="orb-hint">
+          <div class="state-hint welcome">Интерактивное портфолио Сергея Князева — Technical Lead / Architect. Задайте вопрос об опыте, стеке или проектах, выберите подсказку или используйте микрофон.</div>
+        </div>
+      {/if}
+
+      {#if state === 'error'}
+        <div class="inline-error">
+          <div class="msg-error">{errorMessage || 'Что-то пошло не так. Попробуйте ещё раз.'}</div>
+        </div>
+      {/if}
+    </div>
+  {/if}
 
   <!-- ─── Suggestions ──────────────────────────────────────────────────────── -->
-  {#if state === 'idle'}
-    {#if history.length === 0}
-      <div class="suggestions" role="list">
-        {#each suggestions as s}
-          <button class="chip" role="listitem" onclick={() => submitQuery(s)}>{s}</button>
-        {/each}
-      </div>
-    {:else if followUps.length > 0}
-      <div class="suggestions" role="list">
-        {#each followUps as s}
-          <button class="chip" role="listitem" onclick={() => submitQuery(s)}>{s}</button>
-        {/each}
-      </div>
-    {/if}
+  {#if state === 'idle' && activeSuggestions.length > 0}
+    <div class="suggestions" role="list">
+      {#each activeSuggestions as s}
+        <button class="chip" role="listitem" onclick={() => submitQuery(s)}>{s}</button>
+      {/each}
+    </div>
+  {/if}
+
+  <!-- ─── Mode toggle ─────────────────────────────────────────────────────── -->
+  {#if !chatMode && history.length > 0 && state === 'idle'}
+    <div class="mode-toggle-row">
+      <button class="mode-toggle" onclick={openChatMode}>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+        </svg>
+        Открыть диалог ({history.length})
+      </button>
+    </div>
   {/if}
 
   <!-- ─── Composer ────────────────────────────────────────────────────────── -->
@@ -636,6 +710,10 @@
 />
 
 <style>
+  /* ═══════════════════════════════════════════════════════════════════════════ */
+  /* ─── Layout ─────────────────────────────────────────────────────────────── */
+  /* ═══════════════════════════════════════════════════════════════════════════ */
+
   .interface {
     position: relative;
     z-index: 1;
@@ -719,25 +797,60 @@
     border-color: var(--color-accent);
   }
 
-  /* ─── Messages ────────────────────────────── */
+  /* ═══════════════════════════════════════════════════════════════════════════ */
+  /* ─── INLINE MODE ────────────────────────────────────────────────────────── */
+  /* ═══════════════════════════════════════════════════════════════════════════ */
 
-  .messages {
+  .inline-area {
     flex: 1;
-    overflow-y: auto;
-    overflow-x: hidden;
-    padding: 12px 0 8px;
     display: flex;
     flex-direction: column;
-    gap: 20px;
-    scrollbar-gutter: stable;
-    /* Slight backdrop so text is readable over the orb glow */
-    mask-image: linear-gradient(to bottom, transparent 0%, black 48px);
+    justify-content: flex-end;
+    overflow-y: auto;
+    padding: 12px 0;
+    gap: 12px;
   }
 
-  .msg {
+  .inline-answer {
     display: flex;
     flex-direction: column;
     gap: 8px;
+    width: 100%;
+    max-width: 100%;
+    animation: fadeIn 0.3s ease;
+  }
+
+  .inline-question {
+    font-size: 12px;
+    font-family: var(--font-mono);
+    color: var(--color-text-dim);
+    letter-spacing: 0.02em;
+    padding-bottom: 4px;
+  }
+
+  .inline-error {
+    width: 100%;
+    text-align: center;
+    padding-top: 8px;
+  }
+
+  /* ─── Orb hint (inline mode, centered) ───── */
+
+  .orb-hint {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    pointer-events: none;
+    flex: 1;
+  }
+
+  .state-hint {
+    font-size: 10px;
+    font-family: var(--font-mono);
+    color: var(--color-state-hint);
+    letter-spacing: 0.08em;
+    height: 16px;
+    transition: opacity 0.4s ease;
   }
 
   .state-hint.welcome {
@@ -748,6 +861,28 @@
     text-align: center;
     height: auto;
     color: var(--color-text-dim);
+  }
+
+  /* ═══════════════════════════════════════════════════════════════════════════ */
+  /* ─── CHAT MODE ──────────────────────────────────────────────────────────── */
+  /* ═══════════════════════════════════════════════════════════════════════════ */
+
+  .messages {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 12px 0 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    scrollbar-gutter: stable;
+    mask-image: linear-gradient(to bottom, transparent 0%, black 48px);
+  }
+
+  .msg {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
   }
 
   .msg-question {
@@ -761,6 +896,10 @@
     max-width: 85%;
   }
 
+  /* ═══════════════════════════════════════════════════════════════════════════ */
+  /* ─── Answer / Markdown (shared) ─────────────────────────────────────────── */
+  /* ═══════════════════════════════════════════════════════════════════════════ */
+
   .msg-answer {
     align-self: flex-start;
     font-size: 14px;
@@ -769,7 +908,6 @@
     max-width: 100%;
   }
 
-  /* markdown rendered content */
   .msg-answer.md :global(p)          { margin: 0 0 10px; }
   .msg-answer.md :global(p:last-child) { margin-bottom: 0; }
   .msg-answer.md :global(ul),
@@ -875,6 +1013,8 @@
     flex-shrink: 0;
   }
 
+  /* ─── Detail expand ──────────────────────── */
+
   .msg-detail {
     align-self: flex-start;
     font-size: 14px;
@@ -886,7 +1026,6 @@
     animation: fadeIn 0.3s ease;
   }
 
-  /* Reuse .msg-answer markdown styles for detail blocks */
   .msg-detail.md :global(p)          { margin: 0 0 10px; }
   .msg-detail.md :global(p:last-child) { margin-bottom: 0; }
   .msg-detail.md :global(ul),
@@ -923,41 +1062,25 @@
     font-family: var(--font-mono);
   }
 
-  /* ─── Orb background (full-screen canvas layer) ──────────────────── */
+  /* ═══════════════════════════════════════════════════════════════════════════ */
+  /* ─── Orb background ─────────────────────────────────────────────────────── */
+  /* ═══════════════════════════════════════════════════════════════════════════ */
 
   .orb-bg {
     position: fixed;
     inset: 0;
     pointer-events: none;
     z-index: 0;
+    transition: opacity 0.5s ease;
   }
 
-  /* ─── State hint (centered, floats over orb) ─────────────────────── */
-
-  .orb-hint {
-    flex-shrink: 0;
-    display: flex;
-    justify-content: center;
-    padding: 6px 0 10px;
-    pointer-events: none;
+  .orb-bg.chat-mode {
+    opacity: 0.3;
   }
 
-  .state-hint {
-    font-size: 10px;
-    font-family: var(--font-mono);
-    color: var(--color-state-hint);
-    letter-spacing: 0.08em;
-    height: 16px;
-    transition: opacity 0.4s ease;
-  }
-
-  .state-hint.faint {
-    color: var(--color-hint);
-    letter-spacing: 0.12em;
-    font-size: 9px;
-  }
-
-  /* ─── Suggestions ─────────────────────────── */
+  /* ═══════════════════════════════════════════════════════════════════════════ */
+  /* ─── Suggestions ────────────────────────────────────────────────────────── */
+  /* ═══════════════════════════════════════════════════════════════════════════ */
 
   .suggestions {
     flex-shrink: 0;
@@ -993,7 +1116,38 @@
     background: var(--color-accent-glow);
   }
 
-  /* ─── Composer ────────────────────────────── */
+  /* ─── Mode toggle ────────────────────────── */
+
+  .mode-toggle-row {
+    flex-shrink: 0;
+    display: flex;
+    justify-content: center;
+    padding: 4px 0;
+  }
+
+  .mode-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 14px;
+    border-radius: 20px;
+    border: 1px solid var(--color-border);
+    background: none;
+    color: var(--color-text-dim);
+    font-size: 11px;
+    font-family: var(--font-mono);
+    cursor: pointer;
+    transition: color var(--transition), border-color var(--transition);
+  }
+
+  .mode-toggle:hover {
+    color: var(--color-accent);
+    border-color: var(--color-accent);
+  }
+
+  /* ═══════════════════════════════════════════════════════════════════════════ */
+  /* ─── Composer ───────────────────────────────────────────────────────────── */
+  /* ═══════════════════════════════════════════════════════════════════════════ */
 
   .composer {
     flex-shrink: 0;
