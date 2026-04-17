@@ -680,15 +680,6 @@
     </div>
   {/if}
 
-  <!-- ─── Suggestions ──────────────────────────────────────────────────────── -->
-  {#if state === 'idle' && activeSuggestions.length > 0}
-    <div class="suggestions" role="list">
-      {#each activeSuggestions as s}
-        <button class="chip" role="listitem" onclick={() => submitQuery(s)}>{s}</button>
-      {/each}
-    </div>
-  {/if}
-
   <!-- ─── Mode toggle ─────────────────────────────────────────────────────── -->
   {#if !chatMode && history.length > 0 && state === 'idle'}
     <div class="mode-toggle-row">
@@ -704,6 +695,14 @@
   <!-- ─── Composer ────────────────────────────────────────────────────────── -->
   <div class="composer">
     <div class="composer-inner" class:focused={false}>
+      {#if state === 'idle' && !inputText.trim() && activeSuggestions.length > 0}
+        <div class="composer-suggestions">
+          {#each activeSuggestions as s}
+            <button class="chip" onclick={() => submitQuery(s)}>{s}</button>
+          {/each}
+        </div>
+      {/if}
+      <div class="input-row">
       <div class="input-wrap">
         {#if ghostText && inputText}
           <div class="ghost-overlay" aria-hidden="true"><span class="ghost-hidden">{inputText}</span><span class="ghost-completion">{ghostText}</span></div>
@@ -773,6 +772,7 @@
             </svg>
           </button>
         {/if}
+      </div>
       </div>
     </div>
   </div>
@@ -1163,20 +1163,6 @@
     opacity: 0.3;
   }
 
-  /* ═══════════════════════════════════════════════════════════════════════════ */
-  /* ─── Suggestions ────────────────────────────────────────────────────────── */
-  /* ═══════════════════════════════════════════════════════════════════════════ */
-
-  .suggestions {
-    flex-shrink: 0;
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: center;
-    gap: 8px;
-    padding: 10px 0 8px;
-    animation: fadeIn 0.4s ease;
-  }
-
   @keyframes fadeIn {
     from { opacity: 0; transform: translateY(4px); }
     to   { opacity: 1; transform: translateY(0); }
@@ -1241,8 +1227,8 @@
 
   .composer-inner {
     display: flex;
-    align-items: flex-end;
-    gap: 8px;
+    flex-direction: column;
+    gap: 0;
     background: var(--color-surface);
     border: 1px solid var(--color-border);
     border-radius: 14px;
@@ -1252,6 +1238,20 @@
 
   .composer-inner:focus-within {
     border-color: var(--color-accent);
+  }
+
+  .composer-suggestions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding-bottom: 8px;
+    animation: fadeIn 0.3s ease;
+  }
+
+  .input-row {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
   }
 
   .input-wrap {
