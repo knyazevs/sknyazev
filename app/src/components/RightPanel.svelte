@@ -812,24 +812,27 @@
   /* ─── Layout ─────────────────────────────────────────────────────────────── */
   /* ═══════════════════════════════════════════════════════════════════════════ */
 
-  /* ─── Top bar (full-width) ─────────────────── */
+  /* ─── Top bar (full-width masthead) ────────── */
 
   .top-bar {
     position: relative;
-    z-index: 1;
+    z-index: 2;
     width: 100%;
     align-self: stretch;
     flex-shrink: 0;
-    padding: 0 24px;
+    padding: 0 clamp(16px, 4vw, 48px);
+    background: color-mix(in srgb, var(--color-bg) 55%, transparent);
+    backdrop-filter: blur(12px) saturate(1.1);
+    -webkit-backdrop-filter: blur(12px) saturate(1.1);
   }
 
   .top-bar-inner {
-    max-width: 760px;
-    margin: 0 auto;
+    max-width: none;
+    margin: 0;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 18px 0 12px;
+    padding: 14px 0 12px;
   }
 
   .interface {
