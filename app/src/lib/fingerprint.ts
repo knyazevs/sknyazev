@@ -1,5 +1,5 @@
 /**
- * Browser fingerprint computation (ADR-17).
+ * Browser fingerprint computation (ADR-18).
  *
  * Combines canvas rendering (GPU/font-level uniqueness) with browser signals
  * and hashes everything with SHA-256 via the Web Crypto API.

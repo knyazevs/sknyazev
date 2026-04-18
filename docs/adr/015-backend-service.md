@@ -1,4 +1,4 @@
-# ADR-19: Backend-сервис — Kotlin/Ktor
+# ADR-15: Backend-сервис — Kotlin/Ktor
 
 - Статус: Принято
 - Дата: 2026-04-14
@@ -17,7 +17,7 @@ ADR-8 зафиксировал необходимость собственног
 
 Нужен HTTP-сервис, который:
 - принимает запросы от фронтенда
-- реализует RAG-пайплайн поверх документации (ADR-20)
+- реализует RAG-пайплайн поверх документации (ADR-16)
 - проксирует TTS и ASR к OpenAI
 - стримит ответы LLM через SSE
 
@@ -54,7 +54,7 @@ server/
     │   ├── ChatRoutes.kt        # POST /api/chat → SSE
     │   ├── TtsRoutes.kt         # POST /api/tts → audio stream
     │   └── AsrRoutes.kt         # POST /api/asr → {text}
-    ├── rag/                     # RAG-пайплайн (см. ADR-20)
+    ├── rag/                     # RAG-пайплайн (см. ADR-16)
     └── llm/
         ├── OpenRouterClient.kt  # стриминговый LLM
         └── OpenAiClient.kt      # TTS, ASR, Embeddings
@@ -141,4 +141,4 @@ Multi-stage Dockerfile:
 - ADR-0 — мотивация проекта: сервер как артефакт компетентности
 - ADR-3 — ограничения LLM: имплементируются в system prompt
 - ADR-8 — инфраструктура AI: конкретизация решения о VPS-бэкенде
-- ADR-20 — архитектура RAG-пайплайна
+- ADR-16 — архитектура RAG-пайплайна

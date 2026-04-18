@@ -3,10 +3,10 @@ package dev.knyazev.rag
 import kotlin.math.ln
 
 /**
- * Classic BM25 index for keyword-based retrieval (ADR-23).
+ * Classic BM25 index for keyword-based retrieval (ADR-19).
  *
  * Complements dense vector search by excelling at exact term matches:
- * ADR numbers ("ADR-19"), technology names ("Kotlin", "Ktor"), proper nouns.
+ * ADR numbers ("ADR-15"), technology names ("Kotlin", "Ktor"), proper nouns.
  *
  * Parameters follow the original paper (Robertson & Zaragoza, 2009):
  *   k1 = 1.5  — term frequency saturation
@@ -64,7 +64,7 @@ class BM25Index {
 
     private fun tokenize(text: String): List<String> =
         text.lowercase()
-            .split(Regex("[^a-zа-яёa-z0-9-]+"))
+            .split(Regex("[^a-zа-яё0-9-]+"))
             .filter { it.length > 1 }
 
     private fun computeIdf(docs: List<IndexedEntry>): Map<String, Float> {

@@ -134,7 +134,7 @@ arch(rag): заменить single-stage retrieval на HyDE + BM25 + RRF
 семантического разрыва между вопросом и документом. Трёхслойный пайплайн
 устраняет это независимыми сигналами.
 
-Refs: ADR-023, blog/2026-04-14-rag-rethink.md
+Refs: ADR-019, blog/2026-04-14-rag-rethink.md
 ```
 
 ```

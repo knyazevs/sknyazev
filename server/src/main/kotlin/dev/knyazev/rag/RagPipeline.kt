@@ -5,6 +5,7 @@ import dev.knyazev.llm.OpenRouterClient
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlin.math.sqrt
 import org.slf4j.LoggerFactory
 
 data class RagResult(
@@ -16,8 +17,8 @@ data class RagResult(
 private const val DENSE_CANDIDATE_POOL = 20
 private const val BM25_CANDIDATE_POOL = 20
 private const val RRF_K = 60
-private const val SIMILARITY_THRESHOLD = 0.008f  // applied to RRF score, not cosine
-private const val DENSE_COSINE_THRESHOLD = 0.35f
+/** Post-RRF cosine filter (ADR-19). Chunks with cos(query, chunk) below this are dropped. */
+private const val FINAL_COSINE_THRESHOLD = 0.35f
 private const val FINAL_TOP_K = 5
 
 private val SYSTEM_PROMPT = """
@@ -62,11 +63,11 @@ class RagPipeline(
     suspend fun ask(question: String): RagResult = coroutineScope {
         // Step 1: HyDE — reformulate question into hypothetical answer for better embedding alignment
         val hydeText = hydeService.reformulate(question)
+        val queryVector = embeddingService.embed(hydeText)
 
-        // Step 2: Parallel dense + BM25 retrieval
+        // Step 2: Parallel dense + BM25 retrieval (no pre-RRF cosine filter — applied post-fusion)
         val denseDeferred = async {
-            val queryVector = embeddingService.embed(hydeText)
-            vectorStore.searchWithScores(queryVector, DENSE_CANDIDATE_POOL, DENSE_COSINE_THRESHOLD)
+            vectorStore.searchWithScores(queryVector, DENSE_CANDIDATE_POOL)
         }
         val bm25Deferred = async {
             bm25Index.search(question, BM25_CANDIDATE_POOL)
@@ -77,16 +78,26 @@ class RagPipeline(
 
         logger.debug("Dense: ${denseResults.size} candidates, BM25: ${bm25Results.size} candidates")
 
-        // Step 3: RRF fusion + threshold filter → final top-K
-        val finalChunks = RrfFusion.fuse(
+        // Step 3: RRF fusion → top-K candidates (score is RRF reciprocal-rank sum, not cosine)
+        val fusedCandidates = RrfFusion.fuse(
             denseResults = denseResults,
             bm25Results = bm25Results,
             topK = FINAL_TOP_K,
-            threshold = SIMILARITY_THRESHOLD,
             k = RRF_K,
         )
 
-        logger.debug("RRF fused to ${finalChunks.size} chunks for question: \"$question\"")
+        // Step 4: Post-RRF cosine filter (ADR-19) — drop chunks below the similarity threshold.
+        // BM25 can surface finalists that never appeared in dense candidates, so we recompute
+        // cosine against the query vector using each finalist's stored embedding.
+        val queryNorm = norm(queryVector)
+        val finalChunks = fusedCandidates.filter { scored ->
+            val cos = cosineSimilarity(queryVector, queryNorm, scored.entry.vector)
+            cos >= FINAL_COSINE_THRESHOLD
+        }
+
+        logger.debug(
+            "RRF → ${fusedCandidates.size} candidates, cosine-filtered → ${finalChunks.size} chunks for: \"$question\""
+        )
 
         // Step 4: Collect unique source paths (ordered — indices match [1], [2], … in prompt)
         val sources = finalChunks.map { it.entry.filePath }.distinct()
@@ -109,5 +120,18 @@ class RagPipeline(
         }
 
         RagResult(sources = sources, stream = openRouterClient.streamChat(messages))
+    }
+
+    private fun cosineSimilarity(query: FloatArray, queryNorm: Float, doc: FloatArray): Float {
+        var dot = 0f
+        for (i in query.indices) dot += query[i] * doc[i]
+        val dNorm = norm(doc)
+        return if (queryNorm == 0f || dNorm == 0f) 0f else dot / (queryNorm * dNorm)
+    }
+
+    private fun norm(v: FloatArray): Float {
+        var sum = 0f
+        for (x in v) sum += x * x
+        return sqrt(sum)
     }
 }

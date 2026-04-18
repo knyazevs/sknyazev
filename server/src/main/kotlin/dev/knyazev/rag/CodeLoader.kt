@@ -1,6 +1,7 @@
 package dev.knyazev.rag
 
 import java.io.File
+import org.slf4j.LoggerFactory
 
 /**
  * Loads source code files from the repository into DocumentChunks for RAG indexing.
@@ -15,13 +16,15 @@ import java.io.File
  */
 object CodeLoader {
 
+    private val logger = LoggerFactory.getLogger(CodeLoader::class.java)
+
     private val INCLUDED_EXTENSIONS = setOf(
         "kt", "kts",
         "ts", "mjs", "js",
         "svelte",
         "toml", "yml", "yaml",
         "json", "md",
-        "conf", "env",
+        "conf",
     )
 
     private val EXCLUDED_DIRS = setOf(
@@ -43,7 +46,6 @@ object CodeLoader {
         "server/.env.example",
         "app/astro.config.mjs",
         "app/package.json",
-        "docker-compose.yml",
         "CLAUDE.md",
     )
 
@@ -84,7 +86,10 @@ object CodeLoader {
             return emptyList()
         }
 
-        if (lines.size > SKIP_THRESHOLD) return emptyList()
+        if (lines.size > SKIP_THRESHOLD) {
+            logger.info("Skipping {} — {} lines > SKIP_THRESHOLD ({})", relativePath, lines.size, SKIP_THRESHOLD)
+            return emptyList()
+        }
         if (lines.size <= SPLIT_THRESHOLD) return listOf(wholeFileChunk(relativePath, absolutePath, lines))
 
         return when (file.extension) {

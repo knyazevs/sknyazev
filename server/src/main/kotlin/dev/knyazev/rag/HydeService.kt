@@ -5,7 +5,7 @@ import dev.knyazev.llm.OpenRouterClient
 import org.slf4j.LoggerFactory
 
 /**
- * HyDE — Hypothetical Document Embeddings (ADR-23).
+ * HyDE — Hypothetical Document Embeddings (ADR-19).
  *
  * Generates a short hypothetical answer to the user's question using a cheap LLM.
  * The hypothetical answer is semantically closer to relevant documentation chunks
@@ -23,10 +23,15 @@ class HydeService(private val openRouterClient: OpenRouterClient) {
                 ChatMessage(
                     role = "system",
                     content = """
-                        You are a professional profile document assistant.
-                        Write 2-3 sentences as if this were a factual answer from someone's
-                        professional documentation or CV. Be specific and use professional language.
-                        Do NOT say you don't know — generate a plausible answer based on the question.
+                        Ты ассистент, генерирующий гипотетический фрагмент профессиональной документации
+                        для поиска по эмбеддингам (HyDE).
+
+                        Напиши 2–3 предложения на русском языке так, как если бы это был достоверный
+                        фрагмент из CV, ADR или профиля инженера. Используй профессиональную лексику,
+                        конкретные технологии, термины архитектуры. Не начинай с «Не знаю» — сформулируй
+                        правдоподобный ответ по смыслу вопроса.
+
+                        Отвечай только текстом фрагмента, без преамбул и пояснений.
                     """.trimIndent(),
                 ),
                 ChatMessage(

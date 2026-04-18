@@ -28,6 +28,10 @@ pnpm-debug.log*
 # Gradle build output
 server/build/
 server/.gradle/
+server/.kotlin/
 
 # Embedding cache — regenerated automatically, not for VCS
 server/.embedding-cache.json
+
+# Private / personal materials — never in VCS
+private/

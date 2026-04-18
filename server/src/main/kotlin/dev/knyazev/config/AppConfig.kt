@@ -29,7 +29,7 @@ data class AppConfig(
             port = env("PORT")?.toIntOrNull() ?: 8080,
             openRouterApiKey = env("OPENROUTER_API_KEY") ?: "",
             openAiApiKey = env("OPENAI_API_KEY") ?: "",
-            llmModel = env("LLM_MODEL") ?: "anthropic/claude-3-haiku",
+            llmModel = env("LLM_MODEL") ?: "anthropic/claude-opus-4-7",
             classifierModel = env("CLASSIFIER_MODEL") ?: "openai/gpt-4o-mini",
             llmBaseUrl = env("LLM_BASE_URL") ?: "https://openrouter.ai/api/v1",
             embeddingBaseUrl = env("EMBEDDING_BASE_URL") ?: "https://api.openai.com/v1",

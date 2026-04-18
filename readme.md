@@ -28,7 +28,7 @@
 
 ```
 docs/
-  adr/            — архитектурные решения (ADR-019..N)
+  adr/            — архитектурные решения (ADR-000..N)
   blog/           — записи от первого лица, живые нарративы
   profile/        — профиль автора, образование, принципы
   experience/     — опыт работы с cv_description для PDF
@@ -81,7 +81,7 @@ bun run build:cv   # → app/public/cv.pdf
 ## Технологии
 
 **Frontend:** Astro 6, Svelte 5, WebGL2, TypeScript  
-**Backend:** Kotlin, Ktor CIO, Exposed, PostgreSQL (опционально), OpenRouter  
+**Backend:** Kotlin, Ktor CIO, kotlinx-coroutines, in-memory vector store, OpenRouter  
 **Voice:** OpenAI TTS + Whisper  
 **CV:** Node 22 + Puppeteer  
 **Deploy:** GitHub Pages + GitHub Actions

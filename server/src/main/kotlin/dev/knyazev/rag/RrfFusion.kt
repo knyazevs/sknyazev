@@ -1,7 +1,7 @@
 package dev.knyazev.rag
 
 /**
- * Reciprocal Rank Fusion (ADR-23).
+ * Reciprocal Rank Fusion (ADR-19).
  *
  * Merges ranked lists from dense (vector) and sparse (BM25) retrieval
  * without requiring score normalisation across heterogeneous systems.
@@ -51,6 +51,10 @@ object RrfFusion {
             .filter { (_, score) -> score >= threshold }
             .sortedByDescending { (_, score) -> score }
             .take(topK)
-            .map { (id, score) -> ScoredEntry(entryById[id]!!, score) }
+            .map { (id, score) ->
+                val entry = entryById[id]
+                    ?: error("RRF invariant violated: scored id=$id not found in entry index")
+                ScoredEntry(entry, score)
+            }
     }
 }

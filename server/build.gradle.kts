@@ -43,10 +43,18 @@ dependencies {
 
     // .env file support for local dev
     implementation("io.github.cdimascio:dotenv-kotlin:6.4.2")
+
+    // Tests
+    testImplementation(kotlin("test"))
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
 }
 
 kotlin {
     jvmToolchain(21)
+}
+
+tasks.test {
+    useJUnitPlatform()
 }
 
 tasks.shadowJar {

@@ -25,13 +25,22 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Install dependencies
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install root dev dependencies (puppeteer, gray-matter, marked)
+        run: bun install
+
+      - name: Install app dependencies
         run: bun install
         working-directory: app
 
-      - name: Build
-        run: bun run build
-        working-directory: app
+      - name: Build CV PDF
+        run: bun run build:cv
+
+      - name: Build app (Astro)
+        run: bun run build:app
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

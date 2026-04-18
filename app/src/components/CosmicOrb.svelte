@@ -8,7 +8,7 @@
   $effect(() => { _s = state; });
 
   let canvas: HTMLCanvasElement;
-  let animFrame: number;
+  let animFrame: number = 0;
 
   // State → shader parameters
   const PARAMS: Record<OrbState, {
@@ -255,7 +255,24 @@
     const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
     const start = performance.now();
 
+    let visible = true;
+    const visObserver = new IntersectionObserver(
+      entries => {
+        const wasVisible = visible;
+        visible = entries[0]?.isIntersecting ?? true;
+        if (!wasVisible && visible && animFrame === 0) {
+          animFrame = requestAnimationFrame(frame);
+        }
+      },
+      { threshold: 0 },
+    );
+    visObserver.observe(canvas);
+
     function frame() {
+      if (!visible) {
+        animFrame = 0;
+        return;
+      }
       animFrame = requestAnimationFrame(frame);
 
       const tgt = PARAMS[_s];
@@ -293,6 +310,7 @@
     return () => {
       cancelAnimationFrame(animFrame);
       themeObserver.disconnect();
+      visObserver.disconnect();
     };
   });
 </script>
