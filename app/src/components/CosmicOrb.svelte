@@ -92,9 +92,17 @@
         return;
       }
 
+      // ── Sphere wrap (math-only, no silhouette) ──────────────────────────────
+      // Virtual sphere drives UV compression + limb darkening so fluid features
+      // wrap around a curved surface. Visibility is still governed by Gaussian.
+      float Rv  = 0.32 * u_size * pulse;
+      float nz2 = max(1.0 - rad * rad / (Rv * Rv), 0.0);
+      float nz  = sqrt(nz2);                          // 1 at apex → 0 at rim/outside
+      float stretch = 1.0 / max(0.35 + 0.65 * nz, 0.30);
+
       // ── Domain-warped fluid ─────────────────────────────────────────────────
       float t = iTime * u_speed * 0.22;
-      vec2  p = uv * 3.6;
+      vec2  p = uv * 3.6 * stretch;                   // features tighten toward rim
 
       // First warp layer
       vec2 q = vec2(fbm(p + t * 0.70),
@@ -130,6 +138,18 @@
       float vein = smoothstep(0.55, 1.0, length(q) * 0.85);
       col += col3 * vein * 0.35;
 
+      // ── Terrain relief ──────────────────────────────────────────────────
+      // Height from fluid value f. Crests gain incandescent highlight weighted
+      // by sphere apex (nz) — ridges catch internal light like molten cracks.
+      // No external light direction → stays a source, not a reflector.
+      float height = clamp(f * 0.5 + 0.5, 0.0, 1.0);
+      float crest  = smoothstep(0.62, 0.95, height) * (0.25 + 0.55 * nz);
+      col += col4 * crest * 0.45;
+
+      // Valley self-shadow — subtle darkening where height is low & sphere is steep
+      float valley = (1.0 - smoothstep(0.15, 0.55, height)) * nz;
+      col *= mix(1.0, 0.78, valley * 0.45);
+
       // ── Incandescent core ────────────────────────────────────────────────
       // Tighter Gaussian; cools hue toward white-peach and boosts brightness
       // only where fluid is already bright → depth via temperature contrast
@@ -148,6 +168,10 @@
       // Uneven "breathing" — spatial brightness modulation from slow fbm
       // Range ≈ [0.90, 1.10]: orb tleet неравномерно, без ритмичного пульса
       col *= 1.0 + 0.22 * slow;
+
+      // Limb darkening — star-like falloff toward rim (NOT Fresnel brightening)
+      // Helps features feel curved away, reinforces sphere wrap cue
+      col *= mix(0.75, 1.0, nz);
 
       col *= u_brightness;
 
