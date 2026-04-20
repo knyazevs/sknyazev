@@ -2,8 +2,8 @@
 #
 # Kotlin/Native build — produces a ~7 MB static-ish Linux binary (glibc).
 # Build stage: Gradle + konan toolchain на JVM.
-# Runtime:     distroless/base (glibc, без shell/pkgmgr), совпадает с линкером konan.
-# ADR-021.
+# Runtime:     debian:13-slim (trixie) — glibc 2.41, apt ставит недостающие
+#              для K/N libcrypt1 + libgcc-s1 одной командой. ADR-021.
 #
 # Альтернатива — Dockerfile.jvm (fat JAR поверх eclipse-temurin).
 #
@@ -39,15 +39,20 @@ RUN --mount=type=cache,target=/root/.gradle \
       linkReleaseExecutableLinuxX64
 
 # ── Runtime ──────────────────────────────────────────────────────────────────
-# distroless/cc — то же, что base (glibc, без shell/pkgmgr), но с runtime
-# библиотеками C/C++: libgcc_s.so.1, libstdc++.so.6. K/N-бинарь линкуется
-# против libgcc_s (атомики/эксепшны) транзитивно через нативные зависимости.
-FROM gcr.io/distroless/cc-debian12
+# debian:13-slim (trixie) — glibc 2.41, libgcc-s1, libcrypt1 через apt.
+# Отказались от distroless: K/N-бинарь тянул libcrypt1 и libgcc_s.1, и каждую
+# пришлось бы подкладывать руками. apt закрывает это разом.
+# Оверхед ~20 MB против distroless/cc — приемлемо ради устойчивости и наличия
+# shell для отладки внутри контейнера.
+FROM debian:13-slim
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates \
+      libcrypt1 \
+      libgcc-s1 \
+ && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=build /app/build/bin/linuxX64/releaseExecutable/knyazevs-server.kexe /app/knyazevs-server
-# libcrypt.so.1 в Debian 12 вынесена из glibc в отдельный пакет libcrypt1,
-# которого нет даже в distroless/cc. Подкладываем из build-стадии.
-COPY --from=build /lib/x86_64-linux-gnu/libcrypt.so.1 /lib/x86_64-linux-gnu/libcrypt.so.1
 # docs/ и репозиторий целиком монтируются как volumes в docker-compose.prod.yml —
 # так индекс не вшит в образ и обновляется без пересборки.
 EXPOSE 8080
