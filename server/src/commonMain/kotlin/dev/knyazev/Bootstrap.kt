@@ -39,7 +39,7 @@ fun main() {
  * and blocks in `start(wait = true)`.
  */
 fun runServer() {
-    val config = AppConfig.fromEnv()
+    val config = AppConfig.load()
 
     val openAiClient = OpenAiClient(
         apiKey = config.openAiApiKey,

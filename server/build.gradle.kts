@@ -42,7 +42,6 @@ kotlin {
             implementation(libs.kotlinx.datetime)
             implementation(libs.atomicfu)
             implementation(libs.okio)
-            implementation(libs.dotenv.kmp)
             implementation(libs.kotlin.logging)
         }
 

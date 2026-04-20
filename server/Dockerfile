@@ -53,6 +53,9 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=build /app/build/bin/linuxX64/releaseExecutable/knyazevs-server.kexe /app/knyazevs-server
+# Ktor читает application.yaml из WORKDIR через YamlConfigLoader; файл должен
+# быть рядом с бинарём. Env-substitution делает сам Ktor по синтаксису $VAR.
+COPY application.yaml /app/application.yaml
 # docs/ и репозиторий целиком монтируются как volumes в docker-compose.prod.yml —
 # так индекс не вшит в образ и обновляется без пересборки.
 EXPOSE 8080
