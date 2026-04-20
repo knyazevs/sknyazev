@@ -58,11 +58,12 @@ docker image prune -f
 # не зависел от конфигурации proxy/TLS.
 echo "==> Ожидание запуска сервера..."
 HTTP="000"
-for i in $(seq 1 30); do
+ATTEMPTS=20
+for i in $(seq 1 "$ATTEMPTS"); do
   sleep 3
   HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 \
     -X POST http://127.0.0.1:8091/api/session || true)
-  echo "  попытка $i/30 — статус: $HTTP"
+  echo "  попытка $i/$ATTEMPTS — статус: $HTTP"
   # 200/400/401/403 = сервер отвечает; 000/5xx = ещё не поднялся.
   [[ "$HTTP" =~ ^(200|400|401|403)$ ]] && break
 done
@@ -70,7 +71,7 @@ done
 if [[ "$HTTP" =~ ^(200|400|401|403)$ ]]; then
   echo "✅ Деплой успешен (статус $HTTP)"
 else
-  echo "❌ Сервер не ответил после 90 секунд (последний статус: $HTTP)"
+  echo "❌ Сервер не ответил за $((ATTEMPTS * 3)) сек (последний статус: $HTTP)"
   docker compose -f docker-compose.prod.yml logs --tail=150 ktor
   exit 1
 fi

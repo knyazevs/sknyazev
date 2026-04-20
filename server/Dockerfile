@@ -44,6 +44,10 @@ RUN --mount=type=cache,target=/root/.gradle \
 FROM gcr.io/distroless/base-debian12
 WORKDIR /app
 COPY --from=build /app/build/bin/linuxX64/releaseExecutable/knyazevs-server.kexe /app/knyazevs-server
+# libcrypt.so.1 в Debian 12 вынесена из glibc в отдельный пакет libcrypt1,
+# которого нет в distroless/base. K/N-бинарь динамически линкуется против неё
+# (транзитивно через нативные зависимости). Подкладываем из build-стадии.
+COPY --from=build /lib/x86_64-linux-gnu/libcrypt.so.1 /lib/x86_64-linux-gnu/libcrypt.so.1
 # docs/ и репозиторий целиком монтируются как volumes в docker-compose.prod.yml —
 # так индекс не вшит в образ и обновляется без пересборки.
 EXPOSE 8080
