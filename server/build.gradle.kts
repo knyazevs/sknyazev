@@ -1,63 +1,88 @@
 plugins {
-    kotlin("jvm") version "2.3.20"
-    kotlin("plugin.serialization") version "2.0.21"
-    id("io.ktor.plugin") version "3.1.2"
-    id("com.gradleup.shadow") version "9.4.1"
+    alias(libs.plugins.kotlin.multiplatform)
+    alias(libs.plugins.kotlin.serialization)
 }
 
 group = "dev.knyazev"
 version = "1.0.0"
 
-application {
-    mainClass.set("dev.knyazev.ApplicationKt")
-}
-
 repositories {
     mavenCentral()
 }
 
-val ktorVersion = "3.1.2"
-val kotlinxSerializationVersion = "1.7.3"
-val logbackVersion = "1.5.12"
-
-dependencies {
-    // Ktor server
-    implementation("io.ktor:ktor-server-core-jvm:$ktorVersion")
-    implementation("io.ktor:ktor-server-cio-jvm:$ktorVersion")
-    implementation("io.ktor:ktor-server-cors-jvm:$ktorVersion")
-    implementation("io.ktor:ktor-server-content-negotiation-jvm:$ktorVersion")
-    implementation("io.ktor:ktor-serialization-kotlinx-json-jvm:$ktorVersion")
-    implementation("io.ktor:ktor-server-call-logging-jvm:$ktorVersion")
-    implementation("io.ktor:ktor-server-rate-limit-jvm:$ktorVersion")
-
-    // Ktor client
-    implementation("io.ktor:ktor-client-core-jvm:$ktorVersion")
-    implementation("io.ktor:ktor-client-cio-jvm:$ktorVersion")
-    implementation("io.ktor:ktor-client-content-negotiation-jvm:$ktorVersion")
-
-    // Serialization
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:$kotlinxSerializationVersion")
-
-    // Logging
-    implementation("ch.qos.logback:logback-classic:$logbackVersion")
-
-    // .env file support for local dev
-    implementation("io.github.cdimascio:dotenv-kotlin:6.4.2")
-
-    // Tests
-    testImplementation(kotlin("test"))
-    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
-}
-
 kotlin {
     jvmToolchain(21)
+
+    jvm {
+        compilations.all {
+            compileTaskProvider.configure {
+                compilerOptions {
+                    jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_21)
+                }
+            }
+        }
+    }
+
+    linuxX64 {
+        binaries {
+            executable {
+                entryPoint = "dev.knyazev.main"
+                baseName = "knyazevs-server"
+            }
+        }
+    }
+
+    sourceSets {
+        commonMain.dependencies {
+            implementation(libs.bundles.ktor.server.common)
+            implementation(libs.bundles.ktor.client.common)
+
+            implementation(libs.kotlinx.coroutines.core)
+            implementation(libs.kotlinx.serialization.json)
+            implementation(libs.kotlinx.datetime)
+            implementation(libs.atomicfu)
+            implementation(libs.okio)
+            implementation(libs.dotenv.kmp)
+            implementation(libs.kotlin.logging)
+        }
+
+        jvmMain.dependencies {
+            implementation(libs.ktor.server.call.logging)
+            // SLF4J binding — kotlin-logging delegates to SLF4J on JVM
+            implementation(libs.logback.classic)
+        }
+
+        jvmTest.dependencies {
+            implementation(kotlin("test"))
+            implementation(libs.kotlinx.coroutines.test)
+        }
+    }
 }
 
-tasks.test {
-    useJUnitPlatform()
-}
-
-tasks.shadowJar {
+// Fat JAR for JVM target (replaces shadow plugin — works cleanly with KMP)
+tasks.register<Jar>("jvmFatJar") {
+    group = "build"
+    description = "Assembles a fat JAR for the JVM target (used by Dockerfile)."
+    archiveBaseName.set("knyazevs-server")
+    archiveVersion.set(project.version.toString())
     archiveClassifier.set("")
-    mergeServiceFiles()
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    manifest {
+        attributes["Main-Class"] = "dev.knyazev.BootstrapKt"
+    }
+    val jvmJar = tasks.named<Jar>("jvmJar")
+    dependsOn(jvmJar)
+    from(jvmJar.map { zipTree(it.archiveFile) })
+    from({
+        configurations.named("jvmRuntimeClasspath").get()
+            .filter { it.name.endsWith(".jar") }
+            .map { zipTree(it) }
+    })
+}
+
+// Alias so existing `gradle shadowJar` command still works in Dockerfile
+tasks.register("shadowJar") {
+    group = "build"
+    description = "Alias for jvmFatJar — preserves existing Dockerfile build command."
+    dependsOn("jvmFatJar")
 }

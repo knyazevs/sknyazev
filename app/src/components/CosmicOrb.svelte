@@ -2,13 +2,42 @@
   import { onMount } from 'svelte';
 
   type OrbState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'error';
-  let { state = 'idle' }: { state: OrbState } = $props();
+  // Rename destructure: using `state` here shadows the `$state` rune and breaks
+  // Svelte 5 compilation (compiler treats `$state(...)` as store access).
+  let {
+    state: orbState = 'idle',
+    centerY = 0,
+    debug = false,
+    pulseAt = 0,
+    voiceLevel = 0,
+    ondebugclose,
+  }: {
+    state: OrbState;
+    centerY?: number;
+    debug?: boolean;
+    /** Timestamp that triggers a ripple when it changes. Parent sets it on click. */
+    pulseAt?: number;
+    /** Realtime mic amplitude 0..1 — drives shader voice reactivity. */
+    voiceLevel?: number;
+    /** Called when the user dismisses the debug panel via the × button. */
+    ondebugclose?: () => void;
+  } = $props();
 
   let _s: OrbState = 'idle';
-  $effect(() => { _s = state; });
+  let _cy: number = 0;
+  let _voice: number = 0;
+  $effect(() => { _s = orbState; });
+  $effect(() => { _cy = centerY; });
+  $effect(() => { _voice = voiceLevel; });
+  $effect(() => {
+    if (pulseAt > 0) clickAt = performance.now();
+  });
 
   let canvas: HTMLCanvasElement;
   let animFrame: number = 0;
+  let clickAt = 0; // performance.now() of last click, 0 = none
+  let fps = $state(0);
+  let dbg = $state({ speed: 0, brightness: 0, pulse: 0, size: 0, tint: '0,0,0' });
 
   // State → shader parameters
   const PARAMS: Record<OrbState, {
@@ -42,6 +71,10 @@
     uniform float u_pulse;
     uniform float u_size;
     uniform vec3  u_bg;
+    uniform vec2  u_mouse;      // [-1..1] relative to orb canvas center (Y flipped to GL)
+    uniform vec2  u_center;     // offset of orb center in aspect-corrected uv space (y>0 → up on screen)
+    uniform float u_click;      // seconds since last click; ≥10 means inactive
+    uniform float u_voice;      // realtime mic amplitude 0..1 (smoothed by client)
 
     out vec4 fragColor;
 
@@ -77,11 +110,16 @@
     void main() {
       vec2 uv = gl_FragCoord.xy / iResolution - 0.5;
       uv.y *= iResolution.y / iResolution.x;
+      uv   -= u_center;
 
       float rad = length(uv);
 
       // ── Orb shape (Gaussian falloff + pulse) ────────────────────────────────
-      float pulse   = 1.0 + 0.07 * u_pulse * (0.5 + 0.5 * sin(iTime * u_speed * 2.2));
+      // Voice adds an instantaneous amplitude term on top of the slow sine pulse,
+      // so the orb breathes in sync with actual mic input while recording.
+      float pulse   = 1.0
+                    + 0.07 * u_pulse * (0.5 + 0.5 * sin(iTime * u_speed * 2.2))
+                    + 0.14 * u_voice;
       float k       = 88.0 / (u_size * u_size * pulse * pulse);
       float orb     = exp(-rad * rad * k);
       float orbHard = smoothstep(0.0, 0.012, orb);  // crisp interior mask
@@ -103,6 +141,9 @@
       // ── Domain-warped fluid ─────────────────────────────────────────────────
       float t = iTime * u_speed * 0.22;
       vec2  p = uv * 3.6 * stretch;                   // features tighten toward rim
+      // Cursor parallax: features slide with cursor — orb appears to "look at" pointer.
+      // Scaled small; preserves silhouette.
+      p -= u_mouse * 0.18;
 
       // First warp layer
       vec2 q = vec2(fbm(p + t * 0.70),
@@ -173,6 +214,30 @@
       // Helps features feel curved away, reinforces sphere wrap cue
       col *= mix(0.75, 1.0, nz);
 
+      // ── Cursor-side emission ─────────────────────────────────────────────
+      // Brighten the hemisphere facing the cursor — reads as the orb leaning
+      // toward the viewer's attention without introducing an external light dir.
+      float mouseMag    = length(u_mouse);
+      float cursorGate  = smoothstep(0.02, 0.6, mouseMag);
+      vec2  cursorDir   = u_mouse / max(mouseMag, 1e-4);
+      vec2  uvDir       = uv / max(rad, 1e-4);
+      float side        = max(dot(uvDir, cursorDir), 0.0);
+      col += col4 * side * cursorGate * nz * 0.28;
+
+      // ── Voice reactivity ────────────────────────────────────────────────
+      // Core brightens and features intensify with mic amplitude.
+      col += col4 * u_voice * 0.35 * orbHard * nz;
+      col *= 1.0 + u_voice * 0.22;
+
+      // ── Click ripple ─────────────────────────────────────────────────────
+      // Outward radial wave launched on click. Envelope peaks ~50ms, fades by 1.2s.
+      if (u_click < 1.2) {
+        float env  = smoothstep(0.0, 0.05, u_click) * (1.0 - smoothstep(0.0, 1.2, u_click));
+        float wave = sin(rad * 22.0 - u_click * 14.0) * exp(-max(rad - u_click * 0.55, 0.0) * 6.0);
+        col += col4 * wave * env * 0.55;
+        col *= 1.0 + env * 0.18;
+      }
+
       col *= u_brightness;
 
       // Reinhard + mild gamma
@@ -239,7 +304,25 @@
       pulse:      gl.getUniformLocation(prog, 'u_pulse'),
       size:       gl.getUniformLocation(prog, 'u_size'),
       bg:         gl.getUniformLocation(prog, 'u_bg'),
+      mouse:      gl.getUniformLocation(prog, 'u_mouse'),
+      center:     gl.getUniformLocation(prog, 'u_center'),
+      click:      gl.getUniformLocation(prog, 'u_click'),
+      voice:      gl.getUniformLocation(prog, 'u_voice'),
     };
+
+    // Cursor tracking — normalized [-1..1] relative to canvas center, Y flipped for GL
+    let mouseTarget: [number, number]  = [0, 0];
+    let mouseCurrent: [number, number] = [0, 0];
+    let centerCurrent = 0;
+    const onPointerMove = (e: PointerEvent) => {
+      const rect = canvas.getBoundingClientRect();
+      const nx = ((e.clientX - rect.left) / rect.width  - 0.5) * 2;
+      const ny = -((e.clientY - rect.top)  / rect.height - 0.5) * 2;
+      mouseTarget = [nx, ny];
+    };
+    const onPointerLeave = () => { mouseTarget = [0, 0]; };
+    window.addEventListener('pointermove', onPointerMove);
+    document.addEventListener('pointerleave', onPointerLeave);
 
     // Match warm bg colors from global.css
     const getBg = () =>
@@ -254,6 +337,11 @@
     let cur = { ...PARAMS.idle, tint: [...PARAMS.idle.tint] as number[] };
     const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
     const start = performance.now();
+
+    // FPS accumulator for debug overlay
+    let fpsAcc = 0;
+    let fpsFrames = 0;
+    let fpsLast = start;
 
     let visible = true;
     const visObserver = new IntersectionObserver(
@@ -284,6 +372,12 @@
       cur.size       = lerp(cur.size,       tgt.size,       k);
       for (let i = 0; i < 3; i++) cur.tint[i] = lerp(cur.tint[i], tgt.tint[i], k);
 
+      const mk = 0.08;
+      mouseCurrent[0] = lerp(mouseCurrent[0], mouseTarget[0], mk);
+      mouseCurrent[1] = lerp(mouseCurrent[1], mouseTarget[1], mk);
+
+      centerCurrent = lerp(centerCurrent, _cy, 0.05);
+
       const dpr = devicePixelRatio;
       const w   = Math.round(canvas.clientWidth  * dpr);
       const h   = Math.round(canvas.clientHeight * dpr);
@@ -292,7 +386,9 @@
         gl!.viewport(0, 0, w, h);
       }
 
-      const t = (performance.now() - start) / 1000;
+      const now = performance.now();
+      const t = (now - start) / 1000;
+      const clickElapsed = clickAt === 0 ? 999 : (now - clickAt) / 1000;
       gl!.uniform2f(U.res, canvas.width, canvas.height);
       gl!.uniform1f(U.time,       t);
       gl!.uniform1f(U.speed,      cur.speed);
@@ -302,7 +398,27 @@
       gl!.uniform1f(U.pulse,      cur.pulse);
       gl!.uniform1f(U.size,       cur.size);
       gl!.uniform3fv(U.bg,        bgColor);
+      gl!.uniform2f(U.mouse,      mouseCurrent[0], mouseCurrent[1]);
+      gl!.uniform2f(U.center,     0, centerCurrent);
+      gl!.uniform1f(U.click,      clickElapsed);
+      gl!.uniform1f(U.voice,      _voice);
       gl!.drawArrays(gl!.TRIANGLE_STRIP, 0, 4);
+
+      // Debug overlay — update at 4 Hz max
+      fpsFrames++;
+      if (now - fpsLast >= 250) {
+        fpsAcc = Math.round((fpsFrames * 1000) / (now - fpsLast));
+        fpsFrames = 0;
+        fpsLast = now;
+        fps = fpsAcc;
+        dbg = {
+          speed: +cur.speed.toFixed(2),
+          brightness: +cur.brightness.toFixed(2),
+          pulse: +cur.pulse.toFixed(2),
+          size: +cur.size.toFixed(2),
+          tint: cur.tint.map(x => x.toFixed(2)).join(', '),
+        };
+      }
     }
 
     frame();
@@ -311,16 +427,118 @@
       cancelAnimationFrame(animFrame);
       themeObserver.disconnect();
       visObserver.disconnect();
+      window.removeEventListener('pointermove', onPointerMove);
+      document.removeEventListener('pointerleave', onPointerLeave);
     };
   });
 </script>
 
-<canvas bind:this={canvas}></canvas>
+<div class="orb-root" style="--cy: {centerY}">
+  <canvas bind:this={canvas}></canvas>
+  {#if debug}
+    <div class="debug-panel">
+      <div class="debug-head">
+        <div class="debug-title">DEBUG · orb</div>
+        <button
+          type="button"
+          class="debug-close"
+          aria-label="Выключить debug"
+          title="Выключить debug"
+          onclick={() => ondebugclose?.()}
+        >×</button>
+      </div>
+      <div class="debug-row"><span>fps</span><span>{fps}</span></div>
+      <div class="debug-row"><span>state</span><span>{orbState}</span></div>
+      <div class="debug-row"><span>speed</span><span>{dbg.speed}</span></div>
+      <div class="debug-row"><span>brightness</span><span>{dbg.brightness}</span></div>
+      <div class="debug-row"><span>pulse</span><span>{dbg.pulse}</span></div>
+      <div class="debug-row"><span>size</span><span>{dbg.size}</span></div>
+      <div class="debug-row"><span>tint</span><span>{dbg.tint}</span></div>
+    </div>
+  {/if}
+</div>
 
 <style>
+  .orb-root {
+    position: relative;
+    width: 100%;
+    height: 100%;
+  }
+
   canvas {
     width: 100%;
     height: 100%;
     display: block;
+  }
+
+  .debug-panel {
+    position: absolute;
+    top: 80px;
+    right: 16px;
+    min-width: 200px;
+    padding: 10px 12px;
+    background: color-mix(in srgb, var(--color-bg) 82%, transparent);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    color: var(--color-text-dim);
+    pointer-events: auto;
+    z-index: 3;
+    animation: fadeIn 0.3s ease;
+  }
+
+  .debug-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding-bottom: 6px;
+    margin-bottom: 6px;
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .debug-title {
+    color: var(--color-accent);
+    font-size: 9px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+
+  .debug-close {
+    width: 18px;
+    height: 18px;
+    border: none;
+    background: transparent;
+    color: var(--color-text-dim);
+    font-family: var(--font-sans);
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: color var(--transition), background var(--transition);
+  }
+  .debug-close:hover {
+    color: var(--color-accent);
+    background: var(--color-surface-hover);
+  }
+
+  .debug-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 2px 0;
+  }
+
+  .debug-row > span:last-child {
+    color: var(--color-text);
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(-4px); }
+    to { opacity: 1; transform: translateY(0); }
   }
 </style>

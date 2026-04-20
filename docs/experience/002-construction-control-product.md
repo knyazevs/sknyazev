@@ -8,9 +8,9 @@ author-role: builder
 period: "2022–2023"
 team-size: "7–13"
 tags: [construction-tech, b2b, mobile, postgresql, migration, legacy]
-company: "МРС"
-title: "Software Engineer"
-cv_description: "Поддержка и развитие B2B-продукта для строительного контроля. Инициировал и реализовал миграцию MongoDB → PostgreSQL, снизив стоимость владения legacy-системой."
+company: "МРС · ПК СтройКонтроль"
+title: "Tech Lead"
+cv_description: "Технический лидер B2B-продукта для строительного контроля. Инициировал и реализовал миграцию MongoDB → PostgreSQL, снизив стоимость владения legacy-системой. Поддержка и развитие продукта до перевода в режим sunset."
 ---
 
 # ПК СтройКонтроль — Цифровая трансформация строительного контроля

@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "concurrently -n server,app -c cyan,magenta \"bun run dev:server\" \"bun run dev:app\"",
-    "dev:server": "cd server && ./gradlew run",
+    "dev:server": "cd server && ./gradlew runReleaseExecutableLinuxX64",
     "dev:app": "cd app && bun run dev",
     "build:cv": "node --experimental-strip-types scripts/build-cv.ts",
     "build:app": "cd app && bun run build",

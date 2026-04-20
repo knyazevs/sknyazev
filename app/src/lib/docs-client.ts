@@ -171,6 +171,173 @@ export async function getCodeContent(filePath: string): Promise<{ content: strin
   return { content, ext };
 }
 
+export interface CodeSearchHit {
+  lineNumber: number;
+  line: string;
+}
+
+export interface CodeSearchResult {
+  path: string;
+  matches: CodeSearchHit[];
+  totalMatches: number;
+}
+
+const PROD_SEARCH_MAX_HITS_PER_FILE = 5;
+const PROD_SEARCH_LINE_PREVIEW_MAX_LEN = 220;
+
+function collectCodePaths(tree: CodeDir[]): string[] {
+  const out: string[] = [];
+  const walk = (node: CodeDir | CodeFile) => {
+    if ('ext' in node) out.push(node.path);
+    else node.children.forEach(walk);
+  };
+  tree.forEach(walk);
+  return out;
+}
+
+const prodCodeContentCache = new Map<string, string>();
+
+async function prodFetchAllContents(tree: CodeDir[], onProgress?: () => void): Promise<void> {
+  const paths = collectCodePaths(tree).filter(p => !prodCodeContentCache.has(p));
+  const BATCH = 8;
+  for (let i = 0; i < paths.length; i += BATCH) {
+    const batch = paths.slice(i, i + BATCH);
+    await Promise.all(batch.map(async p => {
+      try {
+        const r = await getCodeContent(p);
+        prodCodeContentCache.set(p, r.content);
+      } catch {
+        prodCodeContentCache.set(p, '');
+      }
+    }));
+    onProgress?.();
+  }
+}
+
+function buildSearchRegex(query: string, isRegex: boolean): RegExp | null {
+  try {
+    return new RegExp(
+      isRegex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
+      'gi',
+    );
+  } catch {
+    return null;
+  }
+}
+
+function countLineMatches(line: string, re: RegExp): number {
+  re.lastIndex = 0;
+  let count = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(line)) !== null) {
+    count++;
+    if (m[0].length === 0) re.lastIndex++;
+  }
+  return count;
+}
+
+function prodSearchInCache(query: string, isRegex: boolean): CodeSearchResult[] {
+  const re = buildSearchRegex(query, isRegex);
+  if (!re) return [];
+  const results: CodeSearchResult[] = [];
+  for (const [filePath, content] of prodCodeContentCache) {
+    if (!content) continue;
+    const lines = content.split('\n');
+    const matches: CodeSearchHit[] = [];
+    let total = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const lineHits = countLineMatches(line, re);
+      if (lineHits === 0) continue;
+      total += lineHits;
+      if (matches.length < PROD_SEARCH_MAX_HITS_PER_FILE) {
+        matches.push({
+          lineNumber: i + 1,
+          line: line.length > PROD_SEARCH_LINE_PREVIEW_MAX_LEN
+            ? line.slice(0, PROD_SEARCH_LINE_PREVIEW_MAX_LEN) + '…'
+            : line,
+        });
+      }
+    }
+    if (total > 0) results.push({ path: filePath, matches, totalMatches: total });
+  }
+  results.sort((a, b) => b.totalMatches - a.totalMatches);
+  return results;
+}
+
+export async function searchCode(
+  query: string,
+  tree: CodeDir[],
+  isRegex = false,
+  onProgress?: () => void,
+): Promise<CodeSearchResult[]> {
+  const q = query.trim();
+  if (q.length < 2) return [];
+  if (import.meta.env.DEV) {
+    const url = `/api/code/search?q=${encodeURIComponent(q)}${isRegex ? '&regex=1' : ''}`;
+    const res = await fetch(url);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.results ?? [];
+  }
+  await prodFetchAllContents(tree, onProgress);
+  return prodSearchInCache(q, isRegex);
+}
+
+// ─── Public API (commits) ────────────────────────────────────────────────────
+
+export interface Commit {
+  hash: string;
+  date: string;
+  author: string;
+  message: string;
+  type: string;
+  scope: string;
+  body: string;
+}
+
+const COMMIT_TYPE_RE = /^(feat|arch|fix|docs|infra|design|refactor)(?:\(([^)]+)\))?:\s*(.+)$/;
+
+function parseCommitMessage(message: string): { type: string; scope: string; body: string } {
+  const m = message.match(COMMIT_TYPE_RE);
+  if (m) return { type: m[1], scope: m[2] ?? '', body: m[3] };
+  return { type: 'other', scope: '', body: message };
+}
+
+export async function getCommits(limit = 60): Promise<Commit[]> {
+  if (import.meta.env.DEV) {
+    const res = await fetch(`/api/commits?limit=${limit}`);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.commits ?? [];
+  }
+  const { owner, repo } = GITHUB;
+  const url = `https://api.github.com/repos/${owner}/${repo}/commits?per_page=${limit}`;
+  const res = await fetch(url, {
+    headers: { Accept: 'application/vnd.github.v3+json' },
+  });
+  if (!res.ok) return [];
+  const data = await res.json() as Array<{
+    sha: string;
+    commit: { message: string; author: { name: string; date: string } };
+  }>;
+  return data
+    .filter(c => !c.commit.message.startsWith('Merge '))
+    .map(c => {
+      const firstLine = c.commit.message.split('\n')[0];
+      const { type, scope, body } = parseCommitMessage(firstLine);
+      return {
+        hash: c.sha.slice(0, 7),
+        date: c.commit.author.date.slice(0, 10),
+        author: c.commit.author.name,
+        message: firstLine,
+        type,
+        scope,
+        body,
+      };
+    });
+}
+
 async function fetchGitHubCodeTree(): Promise<CodeDir[]> {
   const { owner, repo } = GITHUB;
   const sourceDirs = ['server/src', 'app/src', 'scripts'];

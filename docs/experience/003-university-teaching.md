@@ -8,7 +8,7 @@ author-role: decision-maker
 period: "2022–2025"
 team-size: "1"
 tags: [teaching, architecture, software-design, mentoring, education]
-company: "ПГТУ"
+company: "ПГТУ · кафедра программных систем"
 title: "Преподаватель"
 cv_description: "По совместительству. Современные методы разработки, проектирование и архитектура ПО — передача практического опыта из индустрии в академическую среду."
 ---

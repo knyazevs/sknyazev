@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { execSync } from 'node:child_process';
 import type { Plugin, Connect } from 'vite';
 import { EXCLUDE_FILES, DIR_LABELS, FILE_LABELS, CODE_SOURCE_DIRS, CODE_EXCLUDED_DIRS, CODE_INCLUDED_EXTENSIONS } from '../config.js';
 
@@ -135,6 +136,128 @@ function getCodeContent(filePath: string): string | null {
   }
 }
 
+interface CodeSearchHit {
+  lineNumber: number;
+  line: string;
+}
+
+interface CodeSearchResult {
+  path: string;
+  matches: CodeSearchHit[];
+  totalMatches: number;
+}
+
+const SEARCH_MAX_HITS_PER_FILE = 5;
+const SEARCH_LINE_PREVIEW_MAX_LEN = 220;
+const SEARCH_MAX_FILES = 200;
+
+function collectAllCodePaths(): string[] {
+  const tree = buildCodeTree();
+  const out: string[] = [];
+  const walk = (node: CodeDir | CodeFile) => {
+    if ('ext' in node) out.push(node.path);
+    else node.children.forEach(walk);
+  };
+  tree.forEach(walk);
+  return out;
+}
+
+function buildSearchRegex(query: string, isRegex: boolean): RegExp | null {
+  try {
+    return new RegExp(
+      isRegex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
+      'gi',
+    );
+  } catch {
+    return null;
+  }
+}
+
+function countLineMatches(line: string, re: RegExp): number {
+  re.lastIndex = 0;
+  let count = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(line)) !== null) {
+    count++;
+    if (m[0].length === 0) re.lastIndex++;
+  }
+  return count;
+}
+
+function searchCodeFiles(query: string, isRegex: boolean): CodeSearchResult[] {
+  const re = buildSearchRegex(query, isRegex);
+  if (!re) return [];
+  const results: CodeSearchResult[] = [];
+  for (const filePath of collectAllCodePaths()) {
+    const content = getCodeContent(filePath);
+    if (!content) continue;
+    const lines = content.split('\n');
+    const matches: CodeSearchHit[] = [];
+    let total = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const lineHits = countLineMatches(line, re);
+      if (lineHits === 0) continue;
+      total += lineHits;
+      if (matches.length < SEARCH_MAX_HITS_PER_FILE) {
+        matches.push({
+          lineNumber: i + 1,
+          line: line.length > SEARCH_LINE_PREVIEW_MAX_LEN
+            ? line.slice(0, SEARCH_LINE_PREVIEW_MAX_LEN) + '…'
+            : line,
+        });
+      }
+    }
+    if (total > 0) results.push({ path: filePath, matches, totalMatches: total });
+    if (results.length >= SEARCH_MAX_FILES) break;
+  }
+  results.sort((a, b) => b.totalMatches - a.totalMatches);
+  return results;
+}
+
+export interface Commit {
+  hash: string;
+  date: string;
+  author: string;
+  message: string;
+  type: string;
+  scope: string;
+  body: string;
+}
+
+const COMMIT_TYPE_RE = /^(feat|arch|fix|docs|infra|design|refactor)(?:\(([^)]+)\))?:\s*(.+)$/;
+
+function parseCommit(message: string): { type: string; scope: string; body: string } {
+  const m = message.match(COMMIT_TYPE_RE);
+  if (m) return { type: m[1], scope: m[2] ?? '', body: m[3] };
+  return { type: 'other', scope: '', body: message };
+}
+
+function buildCommits(limit = 60): Commit[] {
+  try {
+    const raw = execSync(
+      `git log --pretty=format:"%H|%ai|%aN|%s" --no-merges -n ${limit}`,
+      { cwd: REPO_ROOT, encoding: 'utf-8' }
+    );
+    return raw.trim().split('\n').filter(Boolean).map(line => {
+      const [hash, date, author, ...rest] = line.split('|');
+      const message = rest.join('|');
+      const { type, scope, body } = parseCommit(message);
+      return {
+        hash: hash.slice(0, 7),
+        date: date.slice(0, 10),
+        author,
+        message,
+        type,
+        scope,
+        body,
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
 function json(res: Connect.ServerResponse, data: unknown, status = 200) {
   res.statusCode = status;
   res.setHeader('Content-Type', 'application/json');
@@ -164,6 +287,15 @@ export function docsPlugin(): Plugin {
         next();
       });
 
+      server.middlewares.use('/api/commits', (req, res, next) => {
+        const url = new URL(req.url ?? '/', 'http://localhost');
+        if (url.pathname === '/' || url.pathname === '') {
+          const limit = parseInt(url.searchParams.get('limit') ?? '60', 10);
+          return json(res, { commits: buildCommits(Math.min(Math.max(limit, 1), 200)) });
+        }
+        next();
+      });
+
       server.middlewares.use('/api/code', (req, res, next) => {
         const url = new URL(req.url ?? '/', 'http://localhost');
 
@@ -178,6 +310,13 @@ export function docsPlugin(): Plugin {
           if (content === null) return json(res, { error: 'not found' }, 404);
           const ext = path.extname(filePath).slice(1);
           return json(res, { content, ext, path: filePath });
+        }
+
+        if (url.pathname === '/search') {
+          const q = (url.searchParams.get('q') ?? '').trim();
+          if (q.length < 2) return json(res, { results: [] });
+          const isRegex = url.searchParams.get('regex') === '1';
+          return json(res, { results: searchCodeFiles(q, isRegex) });
         }
 
         next();

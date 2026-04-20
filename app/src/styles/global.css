@@ -19,6 +19,16 @@
   --color-hint:         rgba(240, 195, 130, 0.22);
   --color-state-hint:   rgba(240, 195, 130, 0.48);
 
+  /* ── Syntax highlight tokens (dark) ── */
+  --hl-comment: #6E5236;
+  --hl-keyword: #E8A878;
+  --hl-string:  #7DB87D;
+  --hl-number:  #E89063;
+  --hl-title:   #F5C878;
+  --hl-type:    #C9A876;
+  --hl-attr:    #A8CDD4;
+  --hl-meta:    #D4720A;
+
   --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
   --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
 
@@ -44,6 +54,16 @@
   --color-send-hover:   #993808;
   --color-hint:         rgba(60, 30, 8, 0.28);
   --color-state-hint:   rgba(60, 30, 8, 0.52);
+
+  /* ── Syntax highlight tokens (light) ── */
+  --hl-comment: #8A6A48;
+  --hl-keyword: #8E1E5C;
+  --hl-string:  #1F6B2E;
+  --hl-number:  #A03810;
+  --hl-title:   #5A3A10;
+  --hl-type:    #7B4810;
+  --hl-attr:    #0A5C6B;
+  --hl-meta:    #B85A08;
 }
 
 *, *::before, *::after {

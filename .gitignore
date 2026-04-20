@@ -30,6 +30,9 @@ server/build/
 server/.gradle/
 server/.kotlin/
 
+# JVM heap dumps (from konan OOM etc.)
+*.hprof
+
 # Embedding cache — regenerated automatically, not for VCS
 server/.embedding-cache.json
 

@@ -125,7 +125,7 @@ function loadProfile(): {
   const lookingFor = lookingForRaw
     .split("\n")
     .map((l) => l.trim())
-    .filter(Boolean)
+    .filter((l) => l && !/^-{3,}$/.test(l))
     .join(" ");
 
   return { meta: data as Profile, summary, strengths, lookingFor };
@@ -149,7 +149,7 @@ function loadPhoto(photoPath?: string): string | null {
 function loadEducation(): Education {
   const { content } = readMd(path.join(DOCS, "profile/04-education.md"));
 
-  const DEGREE_HEADINGS = ["Бакалавриат", "Магистратура"];
+  const DEGREE_HEADINGS = ["Бакалавриат", "Магистратура", "Аспирантура"];
   const degrees = DEGREE_HEADINGS.map((level) => {
     const section = extractSection(content, level);
     const lines = section.split("\n").map((l) => l.trim()).filter(Boolean);
@@ -215,9 +215,9 @@ const SKILL_NAMES: Record<string, string> = {
 
 const SKILL_TAGS: Record<string, string[]> = {
   architecture: ["Low-code платформы", "SaaS", "B2B", "ADR / C4", "Greenfield & Legacy", "Миграции без даунтайма"],
-  backend: ["Kotlin / KMP", "Java", "TypeScript / Node.js", "PostgreSQL", "Redis", "Ktor · Exposed", "NestJS"],
+  backend: ["Kotlin / KMP", "Java", "TypeScript / Node.js", "PostgreSQL", "Redis", "Ktor · Exposed"],
   leadership: ["Tech Lead", "Backend Lead", "R&D", "Code Review", "Менторинг", "Преподавание"],
-  tooling: ["GitHub Actions", "Jenkins", "Claude Code", "OpenRouter", "Docker / VPS", "Bun · Astro"],
+  tooling: ["GitHub Actions", "Jenkins", "Claude Code", "OpenRouter", "Docker / VPS"],
 };
 
 // ─── HTML rendering ───────────────────────────────────────────────────────────
@@ -241,19 +241,21 @@ function renderContacts(contacts: Profile["contacts"]): string {
 
 function renderExperience(experiences: Experience[]): string {
   return experiences
-    .map(
-      (e) => `
-      <div class="exp">
+    .map((e) => {
+      const isCurrent = /н\.в\.|present/i.test(e.period);
+      return `
+      <div class="exp${isCurrent ? " exp-current" : ""}">
         <div class="exp-row">
-          <div class="exp-left">
-            <span class="exp-co">${esc(e.company!)}</span>
-            ${e.title ? `<span class="exp-role">${esc(e.title)}</span>` : ""}
+          <span class="exp-co">${esc(e.company!)}</span>
+          <div class="exp-right">
+            ${isCurrent ? '<span class="exp-now">сейчас</span>' : ""}
+            <span class="exp-period">${esc(e.period)}</span>
           </div>
-          <span class="exp-period">${esc(e.period)}</span>
         </div>
+        ${e.title ? `<div class="exp-role">${esc(e.title)}</div>` : ""}
         ${e.cv_description ? `<p class="exp-desc">${esc(e.cv_description)}</p>` : ""}
-      </div>`,
-    )
+      </div>`;
+    })
     .join("");
 }
 
@@ -306,7 +308,7 @@ function buildHtml(
   skills: Skill[],
 ): string {
   const age = calcAge(profile.birth_year);
-  const yearsInIT = new Date().getFullYear() - 2014;
+  const yearsInIT = new Date().getFullYear() - 2017;
 
   const photoHtml = photoUri
     ? `<img class="photo" src="${photoUri}" alt="">`
@@ -324,12 +326,12 @@ function buildHtml(
     : "";
 
   const chips = [
-    `${yearsInIT}+ лет в IT`,
-    "Kotlin · Java · TypeScript",
+    `${yearsInIT}+ лет разработки`,
+    "Kotlin · Java · PostgreSQL",
+    "Tech Lead · 7–13 чел.",
     "Low-code · SaaS · Fintech",
-    "Команды 7–13 чел.",
   ]
-    .map((c) => `<span class="chip">${c}</span>`)
+    .map((c) => `<span class="hd-chip">${c}</span>`)
     .join("");
 
   // Render "Что ищу" from data — single sentence per paragraph
@@ -348,32 +350,34 @@ function buildHtml(
   * { box-sizing: border-box; margin: 0; padding: 0; }
   a { color: inherit; text-decoration: none; }
 
-  /* ── Tokens ── */
+  /* ── Tokens (white + warm brand accents) ── */
   :root {
-    --ink:     #0f172a;
-    --blue:    #1d4ed8;
-    --blue-bg: #eff6ff;
-    --blue-bd: #bfdbfe;
-    --text:    #1e293b;
-    --sub:     #475569;
-    --muted:   #64748b;
-    --border:  #e2e8f0;
-    --bg:      #f8fafc;
+    --bg:         #FFFFFF;
+    --surface:    #FBF5E8;
+    --border:     #E8D8B8;
+    --text:       #3A2415;
+    --heading:    #1A0E07;
+    --sub:        #5C3E25;
+    --muted:      #8C6040;
+    --dim:        #A87A50;
+    --accent:     #B85A08;
+    --accent-bg:  rgba(184, 90, 8, 0.08);
+    --accent-bd:  rgba(184, 90, 8, 0.30);
   }
 
   /* ── Page ── */
   body {
-    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
     font-size: 10pt;
     line-height: 1.5;
     color: var(--text);
-    background: #fff;
+    background: var(--bg);
   }
 
-  /* ─────────────────────────── HEADER ─── */
+  /* ─────────────────────────── HEADER (warm dark on light body) ─── */
   .hd {
-    background: var(--ink);
-    color: #fff;
+    background: #1A0E07;
+    color: #E0CBAA;
     padding: 18px 20px 16px;
     display: flex;
     align-items: center;
@@ -384,7 +388,7 @@ function buildHtml(
     width: 78px; height: 78px;
     border-radius: 50%;
     object-fit: cover;
-    border: 2.5px solid rgba(255,255,255,0.22);
+    border: 2.5px solid rgba(212, 114, 10, 0.45);
     flex-shrink: 0;
   }
   .photo-placeholder {
@@ -400,20 +404,30 @@ function buildHtml(
     font-size: 21pt; font-weight: 700;
     letter-spacing: -0.4px; line-height: 1.1;
     margin-bottom: 2px;
+    color: #F5DDBA;
   }
   .hd-info .job-title {
     font-size: 10.5pt;
-    color: #94a3b8;
-    margin-bottom: 10px;
+    color: #D4720A;
+    margin-bottom: 7px;
+  }
+  .hd-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+  .hd-chip {
+    background: rgba(212, 114, 10, 0.14);
+    border: 1px solid rgba(212, 114, 10, 0.45);
+    color: #F5DDBA;
+    font-size: 7.5pt; font-weight: 600;
+    padding: 2px 8px; border-radius: 999px;
+    white-space: nowrap;
   }
   .contacts { display: flex; flex-wrap: wrap; gap: 3px 10px; font-size: 8.5pt; }
-  .ci { color: #cbd5e1; }
-  .ci a { color: #cbd5e1; }
-  .csep { color: rgba(255,255,255,0.18); }
+  .ci { color: #C4A884; }
+  .ci a { color: #C4A884; }
+  .csep { color: rgba(255,255,255,0.22); }
 
   .hd-meta {
     text-align: right;
-    font-size: 9pt; color: #64748b;
+    font-size: 9pt; color: #A87A50;
     white-space: nowrap; line-height: 1.7;
     align-self: flex-start;
     padding-top: 2px;
@@ -422,34 +436,34 @@ function buildHtml(
   /* ─────────────────────────── BODY LAYOUT ─── */
   .body { display: flex; }
 
-  .main { flex: 1; min-width: 0; padding: 15px 18px 15px 18px; }
+  .main { flex: 1; min-width: 0; padding: 12px 18px 12px 18px; }
 
   .sidebar {
     width: 188px; flex-shrink: 0;
-    padding: 15px 14px;
-    background: var(--bg);
+    padding: 12px 14px;
+    background: var(--surface);
     border-left: 1px solid var(--border);
   }
 
   /* ─────────────────────────── SECTIONS ─── */
-  .section { margin-bottom: 13px; }
+  .section { margin-bottom: 10px; }
   .section:last-child { margin-bottom: 0; }
 
   .sec-title {
     font-size: 7.5pt; font-weight: 700;
     text-transform: uppercase; letter-spacing: 1.5px;
-    color: var(--blue);
-    border-bottom: 1.5px solid var(--blue);
-    padding-bottom: 3px; margin-bottom: 8px;
+    color: var(--accent);
+    border-bottom: 1.5px solid var(--accent);
+    padding-bottom: 3px; margin-bottom: 6px;
   }
 
   .sidebar .sec-title {
-    font-size: 7pt; color: var(--ink);
-    border-bottom-color: #cbd5e0;
+    font-size: 7pt;
+    border-bottom-color: var(--accent-bd);
   }
 
   /* ─── Summary ─── */
-  .sum-text { color: var(--sub); font-size: 10pt; line-height: 1.55; }
+  .sum-text { color: var(--text); font-size: 10pt; line-height: 1.55; }
   .sum-text p + p { margin-top: 3px; }
 
   .str-list {
@@ -458,18 +472,9 @@ function buildHtml(
   }
   .str-list li { margin-bottom: 1px; }
 
-  .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
-  .chip {
-    background: var(--blue-bg);
-    border: 1px solid var(--blue-bd);
-    color: var(--blue);
-    font-size: 7.5pt; font-weight: 600;
-    padding: 2px 8px; border-radius: 999px;
-  }
-
   /* ─── Experience ─── */
   .exp {
-    margin-bottom: 8px; padding-bottom: 8px;
+    margin-bottom: 6px; padding-bottom: 6px;
     border-bottom: 1px solid var(--border);
     padding-left: 11px; position: relative;
   }
@@ -478,30 +483,42 @@ function buildHtml(
     content: '';
     position: absolute; left: 0; top: 6px;
     width: 5px; height: 5px;
-    border-radius: 50%; background: var(--blue);
+    border-radius: 50%; background: var(--muted);
   }
 
+  .exp-current::before {
+    background: var(--accent) !important;
+    box-shadow: 0 0 0 3px var(--accent-bg);
+  }
   .exp-row {
     display: flex; justify-content: space-between;
-    align-items: baseline; gap: 6px;
+    align-items: baseline; gap: 8px;
   }
-  .exp-left { display: flex; align-items: baseline; gap: 5px; flex: 1; min-width: 0; }
-  .exp-co { font-weight: 700; font-size: 10.5pt; color: var(--ink); white-space: nowrap; }
-  .exp-role { color: var(--muted); font-size: 9.5pt; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .exp-role::before { content: '— '; }
+  .exp-co { font-weight: 700; font-size: 10.5pt; color: var(--heading); flex: 1; min-width: 0; }
+  .exp-current .exp-co { color: var(--accent); }
+  .exp-role { color: var(--muted); font-size: 9.5pt; margin-top: 1px; }
+  .exp-right { display: flex; align-items: baseline; gap: 5px; flex-shrink: 0; }
+  .exp-now {
+    background: var(--accent); color: var(--bg);
+    font-size: 6.8pt; font-weight: 700;
+    padding: 1px 6px; border-radius: 3px;
+    text-transform: uppercase; letter-spacing: 0.5px;
+    line-height: 1.4;
+  }
   .exp-period {
     color: var(--muted); font-size: 8.5pt; white-space: nowrap; flex-shrink: 0;
-    background: #f1f5f9; padding: 1px 6px; border-radius: 4px; font-weight: 500;
+    background: var(--surface); padding: 1px 6px; border-radius: 4px; font-weight: 500;
+    border: 1px solid var(--border);
   }
-  .exp-desc { color: var(--sub); font-size: 9.5pt; line-height: 1.43; margin-top: 2px; }
+  .exp-desc { color: var(--sub); font-size: 9.5pt; line-height: 1.38; margin-top: 2px; }
 
   /* ─── Sidebar: Skills ─── */
   .skill-cat { margin-bottom: 7px; }
-  .skill-cat-name { font-size: 8.5pt; font-weight: 700; color: var(--ink); margin-bottom: 3px; }
+  .skill-cat-name { font-size: 8.5pt; font-weight: 700; color: var(--heading); margin-bottom: 3px; }
   .skill-tags { display: flex; flex-wrap: wrap; gap: 3px; }
   .st {
-    font-size: 7.5pt; color: var(--sub);
-    background: #fff; border: 1px solid var(--border);
+    font-size: 7.5pt; color: var(--text);
+    background: var(--bg); border: 1px solid var(--border);
     padding: 1px 5px; border-radius: 3px; line-height: 1.45;
   }
 
@@ -531,6 +548,7 @@ function buildHtml(
     <div class="hd-info">
       <h1>${esc(profile.name)}</h1>
       <div class="job-title">${esc(profile.title)}</div>
+      <div class="hd-chips">${chips}</div>
       <div class="contacts">${renderContacts(profile.contacts)}</div>
     </div>
     <div class="hd-meta">
@@ -548,7 +566,6 @@ function buildHtml(
         <div class="sec-title">О себе</div>
         <div class="sum-text">${summaryParas}</div>
         ${strengthsHtml}
-        <div class="chips">${chips}</div>
       </div>
 
       <div class="section">
