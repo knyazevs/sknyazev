@@ -46,6 +46,7 @@ kotlin {
         }
 
         jvmMain.dependencies {
+            implementation(libs.ktor.client.cio)
             implementation(libs.ktor.server.call.logging)
             // SLF4J binding — kotlin-logging delegates to SLF4J on JVM
             implementation(libs.logback.classic)

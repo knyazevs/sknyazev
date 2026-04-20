@@ -44,7 +44,6 @@ ktor-server-common = [
 ]
 ktor-client-common = [
     "ktor-client-core",
-    "ktor-client-cio",
     "ktor-client-content-negotiation",
 ]
 
