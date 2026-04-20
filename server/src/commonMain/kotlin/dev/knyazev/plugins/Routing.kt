@@ -3,6 +3,7 @@ package dev.knyazev.plugins
 import dev.knyazev.api.asrRoutes
 import dev.knyazev.api.autocompleteRoutes
 import dev.knyazev.api.chatRoutes
+import dev.knyazev.api.sessionRoutes
 import dev.knyazev.api.suggestionsRoutes
 import dev.knyazev.api.ttsRoutes
 import dev.knyazev.guard.QuestionGuard
@@ -22,19 +23,29 @@ fun Application.configureRouting(
     openRouterClient: OpenRouterClient,
     questionGuard: QuestionGuard,
     suggestionsService: SuggestionsService,
+    sessionSecret: String,
 ) {
     routing {
         get("/api/health") {
             call.respond(buildJsonObject { put("status", "ok") })
         }
-        suggestionsRoutes(suggestionsService)
-        autocompleteRoutes(openRouterClient)
-        rateLimit(CHAT_RATE_LIMIT) {
-            chatRoutes(ragPipeline, questionGuard, suggestionsService)
+
+        // Public: token issuance — rate-limited only
+        rateLimit(SESSION_RATE_LIMIT) {
+            sessionRoutes(sessionSecret)
         }
-        rateLimit(MEDIA_RATE_LIMIT) {
-            ttsRoutes(openAiClient)
-            asrRoutes(openAiClient)
+
+        // Protected: every downstream API requires a valid session token
+        sessionAuth {
+            suggestionsRoutes(suggestionsService)
+            autocompleteRoutes(openRouterClient)
+            rateLimit(CHAT_RATE_LIMIT) {
+                chatRoutes(ragPipeline, questionGuard, suggestionsService)
+            }
+            rateLimit(MEDIA_RATE_LIMIT) {
+                ttsRoutes(openAiClient)
+                asrRoutes(openAiClient)
+            }
         }
     }
 }

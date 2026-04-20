@@ -8,6 +8,7 @@ import dev.knyazev.plugins.configureCors
 import dev.knyazev.plugins.configureRateLimit
 import dev.knyazev.plugins.configureRouting
 import dev.knyazev.plugins.configureSerialization
+import dev.knyazev.plugins.configureSessionAuth
 import dev.knyazev.rag.BM25Index
 import dev.knyazev.rag.CodeLoader
 import dev.knyazev.rag.DocumentLoader
@@ -97,6 +98,7 @@ fun runServer() {
         configureSerialization()
         configureCors(config.corsAllowedOrigin)
         configureRateLimit()
-        configureRouting(ragPipeline, openAiClient, openRouterClient, questionGuard, suggestionsService)
+        configureSessionAuth(config.sessionSecret)
+        configureRouting(ragPipeline, openAiClient, openRouterClient, questionGuard, suggestionsService, config.sessionSecret)
     }.start(wait = true)
 }

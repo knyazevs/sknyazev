@@ -15,6 +15,8 @@ data class AppConfig(
     val codePath: String,
     val cachePath: String,
     val corsAllowedOrigin: String,
+    /** HMAC secret for session tokens. Required in production. */
+    val sessionSecret: String,
 ) {
     companion object {
         fun fromEnv(): AppConfig = AppConfig(
@@ -30,6 +32,8 @@ data class AppConfig(
             codePath = EnvReader.get("CODE_PATH") ?: "..",
             cachePath = EnvReader.get("CACHE_PATH") ?: ".embedding-cache.json",
             corsAllowedOrigin = EnvReader.get("CORS_ALLOWED_ORIGIN") ?: "http://localhost:4321,https://knyazevs.github.io",
+            sessionSecret = EnvReader.get("SESSION_SECRET")
+                ?: error("SESSION_SECRET must be set (32+ random bytes, hex/base64). Generate with: openssl rand -hex 32"),
         )
     }
 }

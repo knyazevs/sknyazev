@@ -125,11 +125,15 @@ private val RateLimitInterceptor = createRouteScopedPlugin(
 
 const val CHAT_RATE_LIMIT = "chat"
 const val MEDIA_RATE_LIMIT = "media"
+const val SESSION_RATE_LIMIT = "session"
 
 fun Application.configureRateLimit() {
     install(RateLimit) {
         register(CHAT_RATE_LIMIT, limit = 10, refillPeriodMs = 60_000L)
         register(MEDIA_RATE_LIMIT, limit = 20, refillPeriodMs = 60_000L)
+        // Tokens expire after 20 min, so even a legit reconnect-heavy client
+        // needs only a handful per hour. Attackers get no value from grinding.
+        register(SESSION_RATE_LIMIT, limit = 6, refillPeriodMs = 60_000L)
     }
 }
 

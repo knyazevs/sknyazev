@@ -1,7 +1,7 @@
 <script lang="ts">
     import { onMount, tick } from "svelte";
     import { BACKEND_URL } from "../config";
-    import { computeFingerprint } from "../lib/fingerprint";
+    import { authHeaders } from "../lib/session";
     import { marked } from "marked";
     import CosmicOrb from "./CosmicOrb.svelte";
     import ContentModal, { type ContentTab } from "./ContentModal.svelte";
@@ -206,8 +206,6 @@
         }
     }
 
-    let fingerprint = "";
-
     // ─── View mode ──────────────────────────────────────────────────────────────
     let chatMode = $state(false);
     let expandedDetails: Set<number> = $state(new Set());
@@ -269,7 +267,7 @@
                     method: "POST",
                     headers: {
                         "Content-Type": "application/json",
-                        ...fpHeaders(),
+                        ...(await authHeaders()),
                     },
                     body: JSON.stringify({ input: trimmed }),
                     signal: acAbort.signal,
@@ -475,9 +473,10 @@
         if (autoOpenTab) openModal(autoOpenTab);
 
         (async () => {
-            fingerprint = await computeFingerprint();
             try {
-                const res = await fetch(`${BACKEND_URL}/api/suggestions`);
+                const res = await fetch(`${BACKEND_URL}/api/suggestions`, {
+                    headers: await authHeaders(),
+                });
                 if (res.ok) {
                     const data = await res.json();
                     if (data.suggestions?.length)
@@ -493,9 +492,6 @@
         };
     });
 
-    function fpHeaders(): Record<string, string> {
-        return fingerprint ? { "X-Fingerprint": fingerprint } : {};
-    }
 
     async function scrollMessages() {
         await tick();
@@ -521,7 +517,7 @@
         try {
             const response = await fetch(`${BACKEND_URL}/api/chat`, {
                 method: "POST",
-                headers: { "Content-Type": "application/json", ...fpHeaders() },
+                headers: { "Content-Type": "application/json", ...(await authHeaders()) },
                 body: JSON.stringify({ question: questionText }),
             });
 
@@ -674,7 +670,7 @@
     async function fetchAudio(text: string): Promise<Blob> {
         const response = await fetch(`${BACKEND_URL}/api/tts`, {
             method: "POST",
-            headers: { "Content-Type": "application/json", ...fpHeaders() },
+            headers: { "Content-Type": "application/json", ...(await authHeaders()) },
             body: JSON.stringify({ text }),
         });
         if (!response.ok) throw new Error(`TTS error: ${response.status}`);
@@ -744,7 +740,7 @@
             fd.append("audio", blob, "audio.webm");
             const response = await fetch(`${BACKEND_URL}/api/asr`, {
                 method: "POST",
-                headers: { ...fpHeaders() },
+                headers: { ...(await authHeaders()) },
                 body: fd,
             });
             if (!response.ok) throw new Error(`ASR error: ${response.status}`);
