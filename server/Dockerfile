@@ -39,14 +39,14 @@ RUN --mount=type=cache,target=/root/.gradle \
       linkReleaseExecutableLinuxX64
 
 # ── Runtime ──────────────────────────────────────────────────────────────────
-# Distroless base — glibc, без shell и пакетного менеджера. Совпадает с
-# выводом линкера konan (динамически слинковано против glibc 2.19+).
-FROM gcr.io/distroless/base-debian12
+# distroless/cc — то же, что base (glibc, без shell/pkgmgr), но с runtime
+# библиотеками C/C++: libgcc_s.so.1, libstdc++.so.6. K/N-бинарь линкуется
+# против libgcc_s (атомики/эксепшны) транзитивно через нативные зависимости.
+FROM gcr.io/distroless/cc-debian12
 WORKDIR /app
 COPY --from=build /app/build/bin/linuxX64/releaseExecutable/knyazevs-server.kexe /app/knyazevs-server
 # libcrypt.so.1 в Debian 12 вынесена из glibc в отдельный пакет libcrypt1,
-# которого нет в distroless/base. K/N-бинарь динамически линкуется против неё
-# (транзитивно через нативные зависимости). Подкладываем из build-стадии.
+# которого нет даже в distroless/cc. Подкладываем из build-стадии.
 COPY --from=build /lib/x86_64-linux-gnu/libcrypt.so.1 /lib/x86_64-linux-gnu/libcrypt.so.1
 # docs/ и репозиторий целиком монтируются как volumes в docker-compose.prod.yml —
 # так индекс не вшит в образ и обновляется без пересборки.
