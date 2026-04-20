@@ -97,7 +97,8 @@ fun runServer() {
     embeddedServer(CIO, port = config.port) {
         configureSerialization()
         configureCors(config.corsAllowedOrigin)
-        configureRateLimit()
+        //rate limit disabled
+        //configureRateLimit()
         configureSessionAuth(config.sessionSecret)
         configureRouting(ragPipeline, openAiClient, openRouterClient, questionGuard, suggestionsService, config.sessionSecret)
     }.start(wait = true)
