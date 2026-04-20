@@ -15,9 +15,27 @@ cd "$DEPLOY_PATH"
 echo "==> Создание рабочих директорий"
 mkdir -p data
 
-# ── Проверка IMAGE_REF ────────────────────────────────────────────────────────
-if [[ -z "${IMAGE_REF:-}" ]]; then
-  echo "❌ IMAGE_REF не задан. Ожидается из GitHub Actions deploy-job env."
+# ── Проверка обязательных переменных ─────────────────────────────────────────
+# Если хоть одна из этих пуста — сервер либо упадёт на старте
+# (SESSION_SECRET через ?: error), либо внешне оживёт, но RAG и LLM-запросы
+# будут валиться с 401/500. Лучше падать здесь с понятным сообщением.
+REQUIRED_VARS=(
+  IMAGE_REF
+  SESSION_SECRET
+  OPENROUTER_API_KEY
+  OPENAI_API_KEY
+)
+MISSING=()
+for var in "${REQUIRED_VARS[@]}"; do
+  if [[ -z "${!var:-}" ]]; then
+    MISSING+=("$var")
+  fi
+done
+
+if (( ${#MISSING[@]} > 0 )); then
+  echo "❌ Не заданы обязательные переменные: ${MISSING[*]}"
+  echo "   Проверьте GitHub → Settings → Secrets and variables → Actions."
+  echo "   SESSION_SECRET сгенерировать: openssl rand -hex 32"
   exit 1
 fi
 echo "==> IMAGE_REF=$IMAGE_REF"
