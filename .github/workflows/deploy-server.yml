@@ -4,7 +4,11 @@ on:
   push:
     branches: [main]
     paths:
-      - 'server/**'
+      - 'server/src/**'
+      - 'server/build.gradle.kts'
+      - 'server/settings.gradle.kts'
+      - 'server/gradle.properties'
+      - 'server/Dockerfile'
       - 'docs/**'
       - 'docker-compose.prod.yml'
       - 'scripts/deploy-server.sh'

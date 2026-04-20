@@ -1,0 +1,31 @@
+services:
+  ktor:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: knyazevs-ktor
+    environment:
+      PORT: 8080
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      SESSION_SECRET: ${SESSION_SECRET}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://openrouter.ai/api/v1}
+      LLM_MODEL: ${LLM_MODEL:-anthropic/claude-opus-4-7}
+      CLASSIFIER_MODEL: ${CLASSIFIER_MODEL:-openai/gpt-4o-mini}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-https://api.openai.com/v1}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+      CORS_ALLOWED_ORIGIN: ${CORS_ALLOWED_ORIGIN:-https://knyazevs.github.io}
+      DOCS_PATH: /app/docs
+      CODE_PATH: /app/repo
+      CACHE_PATH: /data/embedding-cache.json
+    volumes:
+      - ./docs:/app/docs:ro
+      - ./:/app/repo:ro
+      - ./data:/data
+    ports:
+      # Публикуем на 8091 хоста — туда смотрит Nginx Proxy Manager,
+      # который держит TLS для api.sknyazev.pro. Порт 8091 должен быть
+      # закрыт во внешнем firewall (UFW и т.п.), чтобы из интернета ходили
+      # только через NPM (443).
+      - "8091:8080"
+    restart: unless-stopped

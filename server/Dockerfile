@@ -19,7 +19,7 @@ RUN gradle linkReleaseExecutableLinuxX64 --no-daemon
 FROM gcr.io/distroless/base-debian12
 WORKDIR /app
 COPY --from=build /app/build/bin/linuxX64/releaseExecutable/knyazevs-server.kexe /app/knyazevs-server
-# docs/ is copied at build time so the server can index it on startup.
-COPY ../docs /app/docs
+# docs/ и репозиторий целиком монтируются как volumes в docker-compose.prod.yml —
+# так индекс не вшит в образ и обновляется без пересборки.
 EXPOSE 8080
 ENTRYPOINT ["/app/knyazevs-server"]
