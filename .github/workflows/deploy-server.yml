@@ -1,0 +1,91 @@
+name: Deploy server to VPS
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'server/**'
+      - 'docs/**'
+      - 'docker-compose.prod.yml'
+      - 'scripts/deploy-server.sh'
+      - '.github/workflows/deploy-server.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-server
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      # ── 1. Checkout ────────────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── 2. Деплой на VPS ───────────────────────────────────────────────────
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        timeout-minutes: 20
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+          LLM_MODEL: ${{ vars.LLM_MODEL }}
+          CLASSIFIER_MODEL: ${{ vars.CLASSIFIER_MODEL }}
+          EMBEDDING_BASE_URL: ${{ vars.EMBEDDING_BASE_URL }}
+          EMBEDDING_MODEL: ${{ vars.EMBEDDING_MODEL }}
+          CORS_ALLOWED_ORIGIN: ${{ vars.CORS_ALLOWED_ORIGIN }}
+          SERVER_URL: ${{ vars.SERVER_URL }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+          GIT_REPO_URL: ${{ vars.GIT_REPO_URL }}
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          password: ${{ secrets.VPS_PASSWORD }}
+          port: ${{ vars.VPS_PORT || 22 }}
+          timeout: 20m
+          envs: >
+            OPENROUTER_API_KEY,
+            OPENAI_API_KEY,
+            SESSION_SECRET,
+            LLM_BASE_URL,
+            LLM_MODEL,
+            CLASSIFIER_MODEL,
+            EMBEDDING_BASE_URL,
+            EMBEDDING_MODEL,
+            CORS_ALLOWED_ORIGIN,
+            SERVER_URL,
+            DEPLOY_PATH,
+            GIT_REPO_URL
+          script: |
+            set -e
+            DEPLOY_PATH="${DEPLOY_PATH:-/opt/knyazevs}"
+
+            # Первый деплой: клонировать репо если не существует
+            if [ ! -d "$DEPLOY_PATH/.git" ]; then
+              echo "==> Первый деплой — клонирование репозитория"
+              mkdir -p "$DEPLOY_PATH"
+              chown "$(whoami):$(whoami)" "$DEPLOY_PATH"
+              git clone "$GIT_REPO_URL" "$DEPLOY_PATH"
+            fi
+
+            echo "==> git pull"
+            cd "$DEPLOY_PATH"
+            git fetch origin
+            git reset --hard origin/main
+
+            bash "$DEPLOY_PATH/scripts/deploy-server.sh"
+
+      # ── 3. Уведомление ─────────────────────────────────────────────────────
+      - name: Notify success
+        if: success()
+        run: echo "✅ Deploy succeeded"
+
+      - name: Notify failure
+        if: failure()
+        run: echo "❌ Deploy failed — check logs above"
