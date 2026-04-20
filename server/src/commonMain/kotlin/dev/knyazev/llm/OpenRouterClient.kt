@@ -23,7 +23,7 @@ class OpenRouterClient(
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    private val client = HttpClient(CIO) {
+    private val client = HttpClient() {
         install(HttpTimeout) {
             requestTimeoutMillis = 60_000
             socketTimeoutMillis = 60_000

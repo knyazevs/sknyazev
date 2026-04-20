@@ -21,7 +21,7 @@ class OpenAiClient(
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    private val client = HttpClient(CIO) {
+    private val client = HttpClient() {
         install(HttpTimeout) {
             requestTimeoutMillis = 30_000
             socketTimeoutMillis = 30_000

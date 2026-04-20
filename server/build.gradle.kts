@@ -55,6 +55,12 @@ kotlin {
             implementation(kotlin("test"))
             implementation(libs.kotlinx.coroutines.test)
         }
+
+        val linuxX64Main by getting {
+            dependencies {
+                implementation(libs.ktor.client.curl.linuxx64)
+            }
+        }
     }
 }
 
