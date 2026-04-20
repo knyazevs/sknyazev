@@ -76,7 +76,7 @@ docker image prune -f
 # не зависел от конфигурации proxy/TLS.
 echo "==> Ожидание запуска сервера..."
 HTTP="000"
-ATTEMPTS=20
+ATTEMPTS=60
 for i in $(seq 1 "$ATTEMPTS"); do
   sleep 3
   HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 \
