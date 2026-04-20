@@ -1,9 +1,10 @@
 services:
   ktor:
-    build:
-      context: ./server
-      dockerfile: Dockerfile
+    # Образ собирается и пушится в GHCR через .github/workflows/deploy-server.yml.
+    # IMAGE_REF приходит из deploy-server.sh (генерится из GITHUB_SHA в Actions).
+    image: ${IMAGE_REF:-ghcr.io/knyazevs/knyazevs/server:latest}
     container_name: knyazevs-ktor
+    pull_policy: always
     environment:
       PORT: 8080
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
@@ -25,7 +26,6 @@ services:
     ports:
       # Публикуем на 8091 хоста — туда смотрит Nginx Proxy Manager,
       # который держит TLS для api.sknyazev.pro. Порт 8091 должен быть
-      # закрыт во внешнем firewall (UFW и т.п.), чтобы из интернета ходили
-      # только через NPM (443).
+      # закрыт во внешнем firewall (UFW и т.п.): снаружи — только 443 через NPM.
       - "8091:8080"
     restart: unless-stopped

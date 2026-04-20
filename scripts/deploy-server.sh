@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
 # knyazevs — скрипт деплоя сервера на VPS.
+# Образ собирается в GitHub Actions (см. .github/workflows/deploy-server.yml)
+# и пушится в GHCR; сюда прилетает только IMAGE_REF — тянем и рестартим.
 # TLS и reverse-proxy держит Nginx Proxy Manager на хосте
-# (api.sknyazev.pro → 127.0.0.1:8091). Compose только поднимает Ktor.
-# Git pull выполняется ДО запуска этого скрипта (в GitHub Actions workflow).
+# (api.sknyazev.pro → 127.0.0.1:8091).
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -14,11 +15,19 @@ cd "$DEPLOY_PATH"
 echo "==> Создание рабочих директорий"
 mkdir -p data
 
+# ── Проверка IMAGE_REF ────────────────────────────────────────────────────────
+if [[ -z "${IMAGE_REF:-}" ]]; then
+  echo "❌ IMAGE_REF не задан. Ожидается из GitHub Actions deploy-job env."
+  exit 1
+fi
+echo "==> IMAGE_REF=$IMAGE_REF"
+
 # ── Генерация .env ────────────────────────────────────────────────────────────
 echo "==> Генерация .env"
 cat > .env << EOF
 # Сгенерировано автоматически при деплое $(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
+IMAGE_REF=${IMAGE_REF}
 OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
 OPENAI_API_KEY=${OPENAI_API_KEY}
 SESSION_SECRET=${SESSION_SECRET}
@@ -32,9 +41,12 @@ EOF
 
 chmod 600 .env
 
-# ── Сборка и запуск ──────────────────────────────────────────────────────────
-echo "==> docker compose build & up"
-docker compose -f docker-compose.prod.yml build
+# ── Pull & up ────────────────────────────────────────────────────────────────
+# Никаких build на сервере — тянем готовый K/N-бинарь из GHCR.
+echo "==> docker compose pull"
+docker compose -f docker-compose.prod.yml pull
+
+echo "==> docker compose up -d"
 docker compose -f docker-compose.prod.yml up -d --remove-orphans
 
 # ── Очистка старых образов ────────────────────────────────────────────────────
