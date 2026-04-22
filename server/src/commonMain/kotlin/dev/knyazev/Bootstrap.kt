@@ -49,9 +49,13 @@ fun runServer() {
     val openRouterClient = OpenRouterClient(
         apiKey = config.openRouterApiKey,
         model = config.llmModel,
+        fallbackModels = config.llmFallbackModels,
         classifierModel = config.classifierModel,
         baseUrl = config.llmBaseUrl,
     )
+    if (config.llmFallbackModels.isNotEmpty()) {
+        logger.info { "LLM fallback chain: ${config.llmModel} → ${config.llmFallbackModels.joinToString(" → ")}" }
+    }
 
     val embeddingService = EmbeddingService(openAiClient)
     val vectorStore = InMemoryVectorStore()

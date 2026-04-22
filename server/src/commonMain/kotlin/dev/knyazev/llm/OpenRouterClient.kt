@@ -8,15 +8,25 @@ import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.ktor.utils.io.*
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.flow
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.*
 
 private val logger = KotlinLogging.logger("OpenRouterClient")
 
+/**
+ * Сигнал, что модель упала *до* первого эмитнутого токена — можно безопасно
+ * попробовать следующую модель из списка fallback'ов. Любая другая ошибка
+ * (mid-stream cancel, network drop после эмитов) пробрасывается как есть:
+ * fallback в середине ответа дал бы юзеру склейку двух разных ответов.
+ */
+private class LlmEarlyFailure(message: String) : RuntimeException(message)
+
 class OpenRouterClient(
     private val apiKey: String,
     private val model: String,
+    private val fallbackModels: List<String> = emptyList(),
     private val classifierModel: String = "openai/gpt-4o-mini",
     private val baseUrl: String = "https://openrouter.ai/api/v1",
 ) {
@@ -32,9 +42,36 @@ class OpenRouterClient(
         }
     }
 
+    /**
+     * Стримит ответ LLM, пробуя модели по очереди: primary (`model`), затем
+     * `fallbackModels`. Переключение возможно только пока ни один токен
+     * ещё не эмитнут — это сохраняет инвариант «юзер видит один связный ответ».
+     */
     fun streamChat(messages: List<ChatMessage>): Flow<String> = flow {
+        val models = buildList {
+            add(model)
+            addAll(fallbackModels)
+        }
+        val errors = mutableListOf<String>()
+        for ((idx, modelName) in models.withIndex()) {
+            try {
+                streamFromModel(modelName, messages)
+                return@flow
+            } catch (e: LlmEarlyFailure) {
+                val attempt = idx + 1
+                logger.warn { "LLM fallback: '$modelName' failed ($attempt/${models.size}) — ${e.message}" }
+                errors += "$modelName: ${e.message}"
+            }
+        }
+        error("All LLM models failed. ${errors.joinToString(" | ")}")
+    }
+
+    private suspend fun FlowCollector<String>.streamFromModel(
+        modelName: String,
+        messages: List<ChatMessage>,
+    ) {
         val requestBody = buildJsonObject {
-            put("model", model)
+            put("model", modelName)
             put("stream", true)
             putJsonArray("messages") {
                 messages.forEach { msg ->
@@ -53,7 +90,7 @@ class OpenRouterClient(
         }.execute { response ->
             if (response.status.value !in 200..299) {
                 val body = response.bodyAsText().take(500)
-                error("OpenRouter ${response.status}: $body")
+                throw LlmEarlyFailure("$modelName: ${response.status}: $body")
             }
             val channel: ByteReadChannel = response.bodyAsChannel()
             var emitted = 0
@@ -74,15 +111,16 @@ class OpenRouterClient(
                 }
             }
             if (emitted == 0) {
-                // Ответ 2xx, но ни одного content-токена — вероятно, формат чанка
-                // не содержит delta.content (reasoning-only, пустой ответ, фильтр).
-                // Бросаем, чтобы ChatRoutes.catch показал ошибку пользователю.
-                error(
-                    "OpenRouter returned no content tokens (status=${response.status}, " +
+                // Ответ 2xx, но ни одного content-токена — fallback-able: бросаем
+                // LlmEarlyFailure, ни один emit ещё не прошёл, можно пробовать
+                // следующую модель в списке.
+                throw LlmEarlyFailure(
+                    "$modelName returned no content tokens " +
+                        "(status=${response.status}, " +
                         "firstUnparsed=${firstUnparsed ?: "<no data lines>"})"
                 )
             }
-            logger.debug { "streamChat emitted $emitted tokens" }
+            logger.debug { "streamChat emitted $emitted tokens from $modelName" }
         }
     }
 

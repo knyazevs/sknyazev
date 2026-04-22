@@ -8,6 +8,7 @@ data class AppConfig(
     val openRouterApiKey: String,
     val openAiApiKey: String,
     val llmModel: String,
+    val llmFallbackModels: List<String>,
     val classifierModel: String,
     val llmBaseUrl: String,
     val embeddingBaseUrl: String,
@@ -39,6 +40,10 @@ data class AppConfig(
                 openRouterApiKey = config.property("app.llm.openRouterApiKey").getString(),
                 openAiApiKey = config.property("app.embedding.openAiApiKey").getString(),
                 llmModel = config.property("app.llm.model").getString(),
+                llmFallbackModels = config.property("app.llm.fallbackModels").getString()
+                    .split(",")
+                    .map(String::trim)
+                    .filter(String::isNotEmpty),
                 classifierModel = config.property("app.llm.classifierModel").getString(),
                 llmBaseUrl = config.property("app.llm.baseUrl").getString(),
                 embeddingBaseUrl = config.property("app.embedding.baseUrl").getString(),
