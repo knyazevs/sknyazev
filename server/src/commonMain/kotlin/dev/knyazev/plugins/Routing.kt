@@ -6,10 +6,12 @@ import dev.knyazev.api.chatRoutes
 import dev.knyazev.api.sessionRoutes
 import dev.knyazev.api.suggestionsRoutes
 import dev.knyazev.api.ttsRoutes
-import dev.knyazev.guard.QuestionGuard
+import dev.knyazev.guard.QuestionRouter
 import dev.knyazev.llm.OpenAiClient
 import dev.knyazev.llm.OpenRouterClient
 import dev.knyazev.rag.RagPipeline
+import dev.knyazev.rag.Skill
+import dev.knyazev.rag.SkillExecutor
 import dev.knyazev.rag.SuggestionsService
 import io.ktor.server.application.*
 import io.ktor.server.response.*
@@ -21,7 +23,9 @@ fun Application.configureRouting(
     ragPipeline: RagPipeline,
     openAiClient: OpenAiClient,
     openRouterClient: OpenRouterClient,
-    questionGuard: QuestionGuard,
+    questionRouter: QuestionRouter,
+    skillExecutor: SkillExecutor,
+    skills: Map<String, Skill>,
     suggestionsService: SuggestionsService,
     sessionSecret: String,
 ) {
@@ -40,7 +44,7 @@ fun Application.configureRouting(
             suggestionsRoutes(suggestionsService)
             autocompleteRoutes(openRouterClient)
             rateLimit(CHAT_RATE_LIMIT) {
-                chatRoutes(ragPipeline, questionGuard, suggestionsService)
+                chatRoutes(ragPipeline, questionRouter, skillExecutor, skills, suggestionsService)
             }
             rateLimit(MEDIA_RATE_LIMIT) {
                 ttsRoutes(openAiClient)

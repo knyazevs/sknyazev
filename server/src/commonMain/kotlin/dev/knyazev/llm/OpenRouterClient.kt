@@ -73,6 +73,7 @@ class OpenRouterClient(
             add(model)
             addAll(fallbackModels)
         }
+        println("[LLM] streamChat chain=${models.joinToString(" → ")}")
         val errors = mutableListOf<String>()
         for ((idx, modelName) in models.withIndex()) {
             try {
@@ -99,10 +100,20 @@ class OpenRouterClient(
         tools: List<ToolDefinition>,
     ) {
         val useTools = tools.isNotEmpty() && modelName in TOOL_CAPABLE_MODELS
+        val totalContentChars = messages.sumOf { it.content.length }
+        println(
+            "[LLM] streamFromModel model=$modelName messages=${messages.size} " +
+                "totalContent=$totalContentChars chars (~${totalContentChars / 4} tokens) " +
+                "tools=$useTools"
+        )
 
         val requestBody = buildJsonObject {
             put("model", modelName)
             put("stream", true)
+            // Anthropic через OpenRouter требует max_tokens, иначе иногда отвечает пустым
+            // SSE без data-строк (status 200, 0 токенов). Для остальных это просто верхняя
+            // граница — обычный ответ сильно короче.
+            put("max_tokens", 4000)
             putJsonArray("messages") {
                 messages.forEach { msg ->
                     addJsonObject {
@@ -133,17 +144,21 @@ class OpenRouterClient(
             header(HttpHeaders.ContentType, ContentType.Application.Json)
             setBody(requestBody.toString())
         }.execute { response ->
+            println("[LLM] $modelName response status=${response.status}")
             if (response.status.value !in 200..299) {
                 val body = response.bodyAsText().take(500)
+                println("[LLM] $modelName non-2xx body=$body")
                 throw LlmEarlyFailure("$modelName: ${response.status}: $body")
             }
             val channel: ByteReadChannel = response.bodyAsChannel()
             var emitted = 0
             var firstUnparsed: String? = null
+            val allLines = StringBuilder()
             val toolAccumulators = mutableMapOf<Int, ToolCallAccumulator>()
 
             while (!channel.isClosedForRead) {
                 val line = channel.readLine() ?: break
+                if (allLines.length < 2000) allLines.appendLine(line)
                 if (!line.startsWith("data: ")) continue
                 val data = line.removePrefix("data: ").trim()
                 if (data == "[DONE]") break
@@ -187,20 +202,24 @@ class OpenRouterClient(
             }
 
             if (emitted == 0) {
-                // Ответ 2xx, но ни одного события — fallback-able: бросаем LlmEarlyFailure,
-                // ни один emit ещё не прошёл, можно пробовать следующую модель в списке.
+                println(
+                    "[LLM] $modelName produced 0 events. status=${response.status}\n" +
+                        "  firstUnparsed=${firstUnparsed ?: "<no data lines>"}\n" +
+                        "  raw body (up to 2000 chars):\n${allLines}"
+                )
                 throw LlmEarlyFailure(
                     "$modelName returned no content tokens " +
                         "(status=${response.status}, " +
                         "firstUnparsed=${firstUnparsed ?: "<no data lines>"})"
                 )
             }
-            logger.debug { "streamChat emitted $emitted events from $modelName (tools=$useTools)" }
+            println("[LLM] $modelName emitted $emitted events (tools=$useTools)")
         }
     }
 
-    /** Single non-streaming completion — used by QuestionGuard classifier and suggestions. */
+    /** Single non-streaming completion — used by QuestionRouter classifier and suggestions. */
     suspend fun complete(messages: List<ChatMessage>, model: String = classifierModel, maxTokens: Int = 5): String {
+        println("[LLM-complete] model=$model maxTokens=$maxTokens messages=${messages.size}")
         val requestBody = buildJsonObject {
             put("model", model)
             put("stream", false)
@@ -220,16 +239,23 @@ class OpenRouterClient(
             header(HttpHeaders.ContentType, ContentType.Application.Json)
             setBody(requestBody.toString())
         }
+        println("[LLM-complete] model=$model status=${response.status}")
 
+        val bodyText = response.bodyAsText()
         return runCatching {
-            val obj = json.parseToJsonElement(response.bodyAsText()).jsonObject
-            obj["choices"]!!
+            val obj = json.parseToJsonElement(bodyText).jsonObject
+            val content = obj["choices"]!!
                 .jsonArray[0]
                 .jsonObject["message"]!!
                 .jsonObject["content"]!!
                 .jsonPrimitive.content
                 .trim()
-        }.getOrDefault("")
+            println("[LLM-complete] model=$model content='$content'")
+            content
+        }.getOrElse {
+            println("[LLM-complete] model=$model parse FAILED: ${it.message}. body (up to 500 chars): ${bodyText.take(500)}")
+            ""
+        }
     }
 }
 

@@ -1,4 +1,6 @@
 <script lang="ts">
+    import { openImagePreview } from "../../lib/imagePreview.svelte";
+
     interface GalleryImage {
         url: string;
         caption?: string | null;
@@ -14,7 +16,14 @@
 <div class="gallery-block">
     {#each images as img}
         <figure>
-            <img src={img.url} alt={img.caption ?? ""} loading="lazy" />
+            <button
+                type="button"
+                class="zoom-btn"
+                onclick={() => openImagePreview({ url: img.url, caption: img.caption })}
+                aria-label="Открыть на весь экран"
+            >
+                <img src={img.url} alt={img.caption ?? ""} loading="lazy" />
+            </button>
             {#if img.caption}
                 <figcaption>{img.caption}</figcaption>
             {/if}
@@ -47,5 +56,14 @@
         font-size: 11px;
         color: rgba(255, 255, 255, 0.55);
         line-height: 1.35;
+    }
+    .zoom-btn {
+        display: block;
+        width: 100%;
+        padding: 0;
+        margin: 0;
+        border: none;
+        background: none;
+        cursor: zoom-in;
     }
 </style>

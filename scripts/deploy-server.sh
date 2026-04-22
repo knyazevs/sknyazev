@@ -74,19 +74,19 @@ docker image prune -f
 # ── Проверка здоровья ────────────────────────────────────────────────────────
 # Бьём прямо в Ktor через host-порт 8091 — до NPM, чтобы health-check
 # не зависел от конфигурации proxy/TLS.
+# GET /api/health — публичный, без session-auth и rate-limit, отдаёт 200.
 echo "==> Ожидание запуска сервера..."
 HTTP="000"
 ATTEMPTS=60
 for i in $(seq 1 "$ATTEMPTS"); do
   sleep 3
   HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 \
-    -X POST http://127.0.0.1:8091/api/session || true)
+    http://127.0.0.1:8091/api/health || true)
   echo "  попытка $i/$ATTEMPTS — статус: $HTTP"
-  # 200/400/401/403 = сервер отвечает; 000/5xx = ещё не поднялся.
-  [[ "$HTTP" =~ ^(200|400|401|403)$ ]] && break
+  [[ "$HTTP" == "200" ]] && break
 done
 
-if [[ "$HTTP" =~ ^(200|400|401|403)$ ]]; then
+if [[ "$HTTP" == "200" ]]; then
   echo "✅ Деплой успешен (статус $HTTP)"
 else
   echo "❌ Сервер не ответил за $((ATTEMPTS * 3)) сек (последний статус: $HTTP)"

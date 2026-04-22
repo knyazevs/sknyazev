@@ -14,7 +14,7 @@ app:
     # Comma-separated список моделей для fallback (в порядке попыток),
     # если primary вернула не-2xx либо 200 с нулём content-токенов.
     # Пусто = fallback отключён.
-    fallbackModels: "$LLM_MODEL_FALLBACKS:anthropic/claude-sonnet-4-6,openai/gpt-4o"
+    fallbackModels: "$LLM_MODEL_FALLBACKS:anthropic/claude-sonnet-4-7"
     classifierModel: "$CLASSIFIER_MODEL:openai/gpt-4o-mini"
     openRouterApiKey: "$OPENROUTER_API_KEY:"
   embedding:
@@ -24,6 +24,9 @@ app:
   rag:
     docsPath: "$DOCS_PATH:../docs"
     codePath: "$CODE_PATH:.."
+    # Директория с skill-файлами (ADR-026). Декларативные инструкции под
+    # классы вопросов, активируются роутером.
+    skillsPath: "$SKILLS_PATH:skills"
     cachePath: "$CACHE_PATH:.embedding-cache.json"
   cors:
     # 4321 — дефолтный порт Astro dev; 4322/4323 — на случай, если 4321 занят

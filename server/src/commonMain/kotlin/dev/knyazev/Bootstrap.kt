@@ -1,7 +1,7 @@
 package dev.knyazev
 
 import dev.knyazev.config.AppConfig
-import dev.knyazev.guard.QuestionGuard
+import dev.knyazev.guard.QuestionRouter
 import dev.knyazev.llm.OpenAiClient
 import dev.knyazev.llm.OpenRouterClient
 import dev.knyazev.plugins.configureCors
@@ -17,6 +17,8 @@ import dev.knyazev.rag.EmbeddingService
 import dev.knyazev.rag.HydeService
 import dev.knyazev.rag.InMemoryVectorStore
 import dev.knyazev.rag.RagPipeline
+import dev.knyazev.rag.SkillExecutor
+import dev.knyazev.rag.SkillLoader
 import dev.knyazev.rag.SuggestionsService
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.ktor.server.cio.*
@@ -88,9 +90,20 @@ fun runServer() {
     bm25Index.index(vectorStore.allEntries())
     logger.info { "Indexing complete: ${vectorStore.allEntries().size} chunks in vector store + BM25" }
 
-    val questionGuard = QuestionGuard(openRouterClient)
+    println("[SKILL-BOOT] Loading skills from ${config.skillsPath}...")
+    val skills = SkillLoader.load(config.skillsPath)
+    skills.forEach { s ->
+        println(
+            "[SKILL-BOOT] '${s.name}': sources=${s.sources} triggers=${s.triggers.size} " +
+                "instruction=${s.instruction.length} chars"
+        )
+    }
+    val skillsByName = skills.associateBy { it.name }
 
-    val suggestionsService = SuggestionsService(openRouterClient)
+    val questionRouter = QuestionRouter(openRouterClient, skills)
+    val skillExecutor = SkillExecutor(openRouterClient, config.docsPath)
+
+    val suggestionsService = SuggestionsService(openRouterClient, skills)
     val startupScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     startupScope.launch {
         runCatching {
@@ -103,6 +116,15 @@ fun runServer() {
         configureCors(config.corsAllowedOrigin)
         configureRateLimit()
         configureSessionAuth(config.sessionSecret)
-        configureRouting(ragPipeline, openAiClient, openRouterClient, questionGuard, suggestionsService, config.sessionSecret)
+        configureRouting(
+            ragPipeline,
+            openAiClient,
+            openRouterClient,
+            questionRouter,
+            skillExecutor,
+            skillsByName,
+            suggestionsService,
+            config.sessionSecret,
+        )
     }.start(wait = true)
 }

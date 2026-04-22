@@ -7,10 +7,30 @@ import kotlin.concurrent.Volatile
 
 private val logger = KotlinLogging.logger {}
 
-class SuggestionsService(private val llmClient: OpenRouterClient) {
+class SuggestionsService(
+    private val llmClient: OpenRouterClient,
+    private val skills: List<Skill> = emptyList(),
+) {
 
     @Volatile
     private var initialSuggestions: List<String> = DEFAULT_SUGGESTIONS
+
+    private val skillGuidance: String by lazy { buildSkillGuidance() }
+
+    private fun buildSkillGuidance(): String {
+        if (skills.isEmpty()) return ""
+        val lines = skills.flatMap { s ->
+            s.triggers.map { t -> "  - $t  (→ ${s.name})" }
+        }
+        if (lines.isEmpty()) return ""
+        return """
+
+            Priority — favor questions phrased like these trigger examples (they unlock full
+            structured answers via skill-routing, not narrow top-5 retrieval). Mix at least
+            one such question into the result:
+            ${lines.joinToString("\n")}
+        """.trimIndent()
+    }
 
     /**
      * Generates initial suggestions from indexed content summary.
@@ -31,6 +51,7 @@ class SuggestionsService(private val llmClient: OpenRouterClient) {
                         Based on the content summary below, create exactly 4 short questions (under 40 chars each)
                         that a recruiter or hiring manager would ask. Mix technical and personal questions.
                         Write questions in Russian. Return ONLY the questions, one per line, no numbering.
+                        $skillGuidance
                     """.trimIndent(),
                 ),
                 ChatMessage(role = "user", content = sample),
@@ -67,6 +88,7 @@ class SuggestionsService(private val llmClient: OpenRouterClient) {
                     content = """
                         Based on the Q&A below about Sergey Knyazev, suggest exactly 3 natural follow-up questions.
                         Write in Russian. Short (under 40 chars). One per line, no numbering, no dashes.
+                        $skillGuidance
                     """.trimIndent(),
                 ),
                 ChatMessage(

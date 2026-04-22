@@ -63,10 +63,10 @@ object UiTools {
         }
         return runCatching<UiBlock?> {
             when (name) {
-                "render_image" -> json.decodeFromJsonElement(ImageBlock.serializer(), args)
-                "render_image_gallery" -> json.decodeFromJsonElement(ImageGalleryBlock.serializer(), args)
+                "render_image" -> json.decodeFromJsonElement(ImageBlock.serializer(), args).normalizeUrls()
+                "render_image_gallery" -> json.decodeFromJsonElement(ImageGalleryBlock.serializer(), args).normalizeUrls()
                 "render_link_list" -> json.decodeFromJsonElement(LinkListBlock.serializer(), args)
-                "render_text_with_image" -> json.decodeFromJsonElement(TextWithImageBlock.serializer(), args)
+                "render_text_with_image" -> json.decodeFromJsonElement(TextWithImageBlock.serializer(), args).normalizeUrls()
                 else -> {
                     logger.warn { "UiTools: неизвестный инструмент '$name'" }
                     null
@@ -76,6 +76,34 @@ object UiTools {
             logger.warn { "UiTools '$name' decode error: ${it.message}" }
         }.getOrNull()
     }
+
+    /**
+     * Нормализует URL картинки в веб-доступный `/images/...`.
+     * LLM может подтянуть из контекста путь `docs/profile/profile.png` (из frontmatter
+     * или тела старых документов) — бэкенд-страховка переписывает его.
+     * Http(s) и уже абсолютные `/...` оставляем как есть.
+     */
+    private fun normalizeImageUrl(url: String): String {
+        val trimmed = url.trim()
+        val normalized = when {
+            trimmed.startsWith("http://") || trimmed.startsWith("https://") -> trimmed
+            trimmed.startsWith("/") -> trimmed
+            trimmed.startsWith("docs/") -> "/images/" + trimmed.removePrefix("docs/")
+            else -> "/images/$trimmed"
+        }
+        if (normalized != trimmed) {
+            println("[UiTools] normalized image URL '$trimmed' → '$normalized'")
+        }
+        return normalized
+    }
+
+    private fun ImageBlock.normalizeUrls(): ImageBlock = copy(url = normalizeImageUrl(url))
+
+    private fun ImageGalleryBlock.normalizeUrls(): ImageGalleryBlock =
+        copy(images = images.map { it.copy(url = normalizeImageUrl(it.url)) })
+
+    private fun TextWithImageBlock.normalizeUrls(): TextWithImageBlock =
+        copy(image = image.copy(url = normalizeImageUrl(image.url)))
 
     private fun schemaImage(): JsonObject = buildJsonObject {
         put("type", "object")

@@ -1,5 +1,6 @@
 <script lang="ts">
     import { marked } from "marked";
+    import { openImagePreview } from "../../lib/imagePreview.svelte";
 
     interface ImageRef {
         url: string;
@@ -19,7 +20,14 @@
 
 <div class="twi-block" class:reverse={imagePosition === "right"}>
     <figure class="twi-image">
-        <img src={image.url} alt={image.alt ?? image.caption ?? ""} loading="lazy" />
+        <button
+            type="button"
+            class="zoom-btn"
+            onclick={() => openImagePreview({ url: image.url, caption: image.caption, alt: image.alt })}
+            aria-label="Открыть на весь экран"
+        >
+            <img src={image.url} alt={image.alt ?? image.caption ?? ""} loading="lazy" />
+        </button>
         {#if image.caption}
             <figcaption>{image.caption}</figcaption>
         {/if}
@@ -55,6 +63,15 @@
         height: auto;
         max-height: 180px;
         object-fit: cover;
+    }
+    .zoom-btn {
+        display: block;
+        width: 100%;
+        padding: 0;
+        margin: 0;
+        border: none;
+        background: none;
+        cursor: zoom-in;
     }
     figcaption {
         padding-top: 4px;

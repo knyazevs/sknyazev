@@ -134,11 +134,21 @@ function loadProfile(): {
 
 function loadPhoto(photoPath?: string): string | null {
   if (!photoPath) return null;
-  const fullPath = path.isAbsolute(photoPath)
-    ? photoPath
-    : path.resolve(ROOT, photoPath);
-  if (!fs.existsSync(fullPath)) {
-    console.warn(`[cv] Photo not found: ${fullPath} — skipping`);
+  // Web-style /images/foo/bar.png (рантайм-URL, единый для сайта, LLM и CV) —
+  // резолвим в app/public/images (после build-static-data) либо в docs/ (исходник).
+  const candidates: string[] = [];
+  if (photoPath.startsWith("/images/")) {
+    const rel = photoPath.slice("/images/".length);
+    candidates.push(path.resolve(ROOT, "app", "public", "images", rel));
+    candidates.push(path.resolve(DOCS, rel));
+  } else if (path.isAbsolute(photoPath)) {
+    candidates.push(photoPath);
+  } else {
+    candidates.push(path.resolve(ROOT, photoPath));
+  }
+  const fullPath = candidates.find((p) => fs.existsSync(p));
+  if (!fullPath) {
+    console.warn(`[cv] Photo not found (tried: ${candidates.join(", ")}) — skipping`);
     return null;
   }
   const ext = path.extname(fullPath).slice(1).toLowerCase();

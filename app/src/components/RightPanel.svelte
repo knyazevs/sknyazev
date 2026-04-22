@@ -7,57 +7,55 @@
     import ContentModal, { type ContentTab } from "./ContentModal.svelte";
     import DebugLogStream from "./DebugLogStream.svelte";
     import { pushLog } from "../lib/debugLog.svelte";
-    import { BLOCK_REGISTRY, type UiBlock } from "./blocks/BlockRegistry";
+    import { imagePreviewState, closeImagePreview } from "../lib/imagePreview.svelte";
+    import { type UiBlock } from "./blocks/BlockRegistry";
+    import TextBlock from "./blocks/TextBlock.svelte";
+    import ImageBlock from "./blocks/ImageBlock.svelte";
+    import ImageGalleryBlock from "./blocks/ImageGalleryBlock.svelte";
+    import LinkListBlock from "./blocks/LinkListBlock.svelte";
+    import TextWithImageBlock from "./blocks/TextWithImageBlock.svelte";
 
     let { autoOpenTab = null }: { autoOpenTab?: ContentTab | null } = $props();
-
-    // ADR-024: картинки и внешние/относительные ссылки представлены UI-блоками,
-    // поэтому вычищаем их из markdown перед рендерингом — иначе будет дубль.
-    // Якорные ссылки (`[...](#section)`) оставляем. Inline `[text](url)` заменяем
-    // на `text`, чтобы абзац остался связным.
-    function sanitizeMarkdown(text: string): string {
-        return text
-            .split("\n")
-            .filter((line) => !/^\s*!\[[^\]]*\]\([^)\s]+\)\s*$/.test(line))
-            .join("\n")
-            .replace(
-                /(?<!!)\[([^\]]+)\]\(([^)\s]+)\)/g,
-                (match, title, url) =>
-                    url.startsWith("#") ? match : title,
-            );
-    }
-
-    function renderMd(text: string, sources?: string[]): string {
-        const clean = sanitizeMarkdown(text);
-        let html = marked.parse(clean, { async: false }) as string;
-        if (sources?.length) {
-            html = html.replace(/\[(\d+)\]/g, (match, num) => {
-                const idx = parseInt(num, 10) - 1;
-                if (idx < 0 || idx >= sources.length) return match;
-                return `<button class="cite-badge" data-source-idx="${idx}">${num}</button>`;
-            });
-        }
-        return html;
-    }
 
     type PanelState = "idle" | "listening" | "thinking" | "speaking" | "error";
 
     const DETAIL_MARKER = "---DETAIL---";
 
+    // ADR-025: Message — массив блоков, один из типов (text) стримится по токенам.
+    // Маркер DETAIL_MARKER живёт внутри text-блока, разбиение делает TextBlock.svelte.
     interface Message {
         question: string;
-        answer: string;
-        sources: string[];
         blocks: UiBlock[];
+        sources: string[];
     }
 
-    function splitAnswer(text: string): { summary: string; detail: string } {
-        const idx = text.indexOf(DETAIL_MARKER);
-        if (idx < 0) return { summary: text.trim(), detail: "" };
-        return {
-            summary: text.slice(0, idx).trim(),
-            detail: text.slice(idx + DETAIL_MARKER.length).trim(),
-        };
+    // ADR-025: миграция старой истории sessionStorage (answer + blocks → [text-блок, ...blocks]).
+    function migrateMessage(m: any): Message {
+        if (m && typeof m === "object" && typeof m.answer === "string") {
+            const legacyText: UiBlock = {
+                id: `legacy-${Math.random().toString(36).slice(2, 8)}`,
+                type: "text",
+                content: m.answer,
+            };
+            const visual: UiBlock[] = Array.isArray(m.blocks)
+                ? m.blocks.filter((b: any) => b && b.type !== "text")
+                      .map((b: any, i: number) => ({ id: b.id ?? `legacy-vis-${i}`, ...b }))
+                : [];
+            return {
+                question: m.question ?? "",
+                sources: Array.isArray(m.sources) ? m.sources : [],
+                blocks: [legacyText, ...visual],
+            };
+        }
+        return m as Message;
+    }
+
+    function findStreamingTextBlockIdx(blocks: UiBlock[]): number {
+        for (let i = blocks.length - 1; i >= 0; i--) {
+            const b = blocks[i];
+            if (b.type === "text" && b.streaming) return i;
+        }
+        return -1;
     }
 
     let state: PanelState = $state("idle");
@@ -79,7 +77,14 @@
     function closeModal() {
         modalOpen = false;
         modalOpenPath = null;
+        closeImagePreview();
     }
+
+    // Картинка раскрывается через универсальный ContentModal в image-режиме:
+    // блоки зовут openImagePreview() → стор обновляется → здесь включаем modalOpen.
+    $effect(() => {
+        if (imagePreviewState.value) modalOpen = true;
+    });
 
     let messagesEl: HTMLElement | undefined = $state();
     let inputEl: HTMLTextAreaElement | undefined = $state();
@@ -229,7 +234,6 @@
 
     // ─── View mode ──────────────────────────────────────────────────────────────
     let chatMode = $state(false);
-    let expandedDetails: Set<number> = $state(new Set());
 
     const MODE_KEY = "chat-mode";
 
@@ -372,7 +376,12 @@
     }
 
     function injectReply(question: string, answer: string) {
-        history = [...history, { question, answer, sources: [], blocks: [] }];
+        const textBlock: UiBlock = {
+            id: `inj-${Math.random().toString(36).slice(2, 8)}`,
+            type: "text",
+            content: answer,
+        };
+        history = [...history, { question, sources: [], blocks: [textBlock] }];
         persistChat();
         if (chatMode) scrollMessages();
     }
@@ -381,7 +390,6 @@
         history = [];
         followUps = [];
         streamingIdx = null;
-        expandedDetails = new Set();
         persistChat();
         if (chatMode) closeChatMode();
     }
@@ -534,8 +542,8 @@
         try {
             const saved = sessionStorage.getItem(HISTORY_KEY);
             if (saved) {
-                const parsed: Message[] = JSON.parse(saved);
-                if (parsed.length) history = [...parsed];
+                const parsed: any[] = JSON.parse(saved);
+                if (parsed.length) history = parsed.map(migrateMessage);
             }
             const savedFollowUps = sessionStorage.getItem(FOLLOWUPS_KEY);
             if (savedFollowUps) {
@@ -602,7 +610,7 @@
         const questionText = question.trim();
         history = [
             ...history,
-            { question: questionText, answer: "", sources: [], blocks: [] },
+            { question: questionText, sources: [], blocks: [] },
         ];
         const msgIdx = history.length - 1;
         streamingIdx = msgIdx;
@@ -630,20 +638,49 @@
             pushLog("res", `chat 200 stream open`);
 
             state = "speaking";
-            let fullAnswer = "";
             let tokenCount = 0;
             let tokenBatchStart = 0;
             const TOKEN_BATCH = 15;
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
 
-            // Streaming TTS: fire off TTS requests as sentences complete
+            // ADR-025: SSE-протокол — block_start/token/block_end/block. Текст приходит
+            // как поток токенов, привязанных к id открытого text-блока. TTS работает с
+            // первым text-блоком до маркера ---DETAIL--- (как раньше).
             const ttsQueue: Promise<Blob>[] = [];
-            let ttsSentBuffer = ""; // text already sent to TTS
-            let ttsFullText = ""; // accumulates only summary (before ---DETAIL---)
+            let ttsSentBuffer = "";
+            let ttsFullText = "";
+            let ttsTrackedBlockId: string | null = null;
             let detailStarted = false;
+            const blocksById = new Map<string, UiBlock>();
 
-            while (true) {
+            const tryAppendTts = () => {
+                if (!ttsEnabled || detailStarted) return;
+                const unsent = ttsFullText.slice(ttsSentBuffer.length);
+                const sentenceEnd = unsent.search(/[.!?。]\s/);
+                if (sentenceEnd < 0) return;
+                const sendUpTo = ttsSentBuffer.length + sentenceEnd + 1;
+                const chunk = ttsFullText.slice(ttsSentBuffer.length, sendUpTo).trim();
+                if (!chunk) return;
+                ttsQueue.push(fetchAudio(chunk));
+                ttsSentBuffer = ttsFullText.slice(0, sendUpTo);
+            };
+
+            const applyDedup = (incoming: UiBlock, prev: UiBlock[]): UiBlock[] | null => {
+                if (incoming.type === "text_with_image") {
+                    const url = incoming.image.url;
+                    return prev.filter(b => !(b.type === "image" && b.url === url));
+                }
+                if (incoming.type === "image") {
+                    const already = prev.some(
+                        b => b.type === "text_with_image" && b.image.url === incoming.url,
+                    );
+                    if (already) return null;
+                }
+                return prev;
+            };
+
+            streamLoop: while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
 
@@ -651,116 +688,104 @@
                 for (const line of chunk.split("\n")) {
                     if (!line.startsWith("data: ")) continue;
                     const data = line.slice(6).trim();
-                    if (data === "[DONE]") break;
+                    if (data === "[DONE]") break streamLoop;
+                    let parsed: any;
                     try {
-                        const parsed = JSON.parse(data);
-                        if (parsed.token) {
-                            fullAnswer += parsed.token;
+                        parsed = JSON.parse(data);
+                    } catch {
+                        continue; // partial JSON
+                    }
+
+                    if (parsed.block_start) {
+                        const { id, type } = parsed.block_start;
+                        if (type === "text") {
+                            const textBlock: UiBlock = { id, type: "text", content: "", streaming: true };
+                            blocksById.set(id, textBlock);
+                            history[msgIdx].blocks = [...history[msgIdx].blocks, textBlock];
+                            if (ttsTrackedBlockId === null) ttsTrackedBlockId = id;
+                            pushLog("evt", `block_start:text ${id}`);
+                            if (chatMode) await scrollMessages();
+                        }
+                    } else if (parsed.token) {
+                        const { id, delta } = parsed.token;
+                        const block = blocksById.get(id);
+                        if (block && block.type === "text") {
+                            const updated: UiBlock = { ...block, content: block.content + delta };
+                            blocksById.set(id, updated);
+                            history[msgIdx].blocks = history[msgIdx].blocks.map(b =>
+                                b.id === id ? updated : b,
+                            );
                             tokenCount += 1;
                             if (tokenCount - tokenBatchStart >= TOKEN_BATCH) {
-                                pushLog("evt", `tokens ${tokenBatchStart + 1}..${tokenCount} (len ${fullAnswer.length})`);
+                                pushLog("evt", `tokens ${tokenBatchStart + 1}..${tokenCount}`);
                                 tokenBatchStart = tokenCount;
                             }
-                            history[msgIdx].answer = fullAnswer;
-                            if (chatMode) await scrollMessages();
-
-                            // Track summary portion for TTS (stop at DETAIL marker)
-                            if (!detailStarted) {
-                                if (fullAnswer.includes(DETAIL_MARKER)) {
+                            if (id === ttsTrackedBlockId) {
+                                if (!detailStarted && updated.content.includes(DETAIL_MARKER)) {
                                     detailStarted = true;
-                                    ttsFullText = fullAnswer
-                                        .split(DETAIL_MARKER)[0]
-                                        .trim();
-                                } else {
-                                    ttsFullText = fullAnswer;
+                                    ttsFullText = updated.content.split(DETAIL_MARKER)[0].trim();
+                                } else if (!detailStarted) {
+                                    ttsFullText = updated.content;
                                 }
-
-                                // Detect sentence boundary in unsent text and fire TTS
-                                if (ttsEnabled) {
-                                    const unsent = ttsFullText.slice(
-                                        ttsSentBuffer.length,
-                                    );
-                                    const sentenceEnd =
-                                        unsent.search(/[.!?。]\s/);
-                                    if (sentenceEnd >= 0) {
-                                        const sendUpTo =
-                                            ttsSentBuffer.length +
-                                            sentenceEnd +
-                                            1;
-                                        const chunk = ttsFullText
-                                            .slice(
-                                                ttsSentBuffer.length,
-                                                sendUpTo,
-                                            )
-                                            .trim();
-                                        if (chunk) {
-                                            ttsQueue.push(fetchAudio(chunk));
-                                            ttsSentBuffer = ttsFullText.slice(
-                                                0,
-                                                sendUpTo,
-                                            );
-                                        }
-                                    }
-                                }
+                                tryAppendTts();
                             }
+                            // Форсируем рендер после каждого токена — иначе Svelte 5 батчит
+                            // обновления $state и при быстром SSE-chunk'е весь текст появляется
+                            // «залпом» после обработки всего чанка.
+                            await tick();
+                            if (chatMode) await scrollMessages();
                         }
-                        if (parsed.block) {
-                            const incoming = parsed.block as UiBlock;
-                            const prev = history[msgIdx].blocks ?? [];
-                            // Дедуп: text_with_image выигрывает у одиночного image с тем же URL,
-                            // и наоборот — уже показанный text_with_image не даёт повторно вставить
-                            // отдельный image того же ресурса.
-                            let next = prev;
-                            if (incoming.type === "text_with_image") {
-                                const url = incoming.image.url;
-                                next = prev.filter(b => !(b.type === "image" && b.url === url));
-                            } else if (incoming.type === "image") {
-                                const already = prev.some(
-                                    b => b.type === "text_with_image" && b.image.url === incoming.url,
-                                );
-                                if (already) {
-                                    pushLog("evt", `block:image dedup`);
-                                    continue;
-                                }
-                            }
+                    } else if (parsed.block_end) {
+                        const { id } = parsed.block_end;
+                        const block = blocksById.get(id);
+                        if (block && block.type === "text") {
+                            const updated: UiBlock = { ...block, streaming: false };
+                            blocksById.set(id, updated);
+                            history[msgIdx].blocks = history[msgIdx].blocks.map(b =>
+                                b.id === id ? updated : b,
+                            );
+                            pushLog("evt", `block_end ${id}`);
+                        }
+                    } else if (parsed.block) {
+                        const incoming = parsed.block as UiBlock;
+                        const next = applyDedup(incoming, history[msgIdx].blocks);
+                        if (next === null) {
+                            pushLog("evt", `block:${incoming.type} dedup`);
+                        } else {
                             history[msgIdx].blocks = [...next, incoming];
+                            blocksById.set(incoming.id, incoming);
                             pushLog("evt", `block:${incoming.type}`);
                             if (chatMode) await scrollMessages();
                         }
-                        if (parsed.sources) {
-                            pendingSources = parsed.sources;
-                            pushLog("evt", `sources[${parsed.sources.length}]`);
-                        }
-                        if (parsed.suggestions) {
-                            followUps = parsed.suggestions;
-                            pushLog("evt", `suggestions[${parsed.suggestions.length}]`);
-                        }
-                        if (parsed.error) {
-                            pushLog("err", `stream error: ${parsed.error}`);
-                            throw new Error(parsed.error);
-                        }
-                    } catch {
-                        // partial JSON — skip
+                    } else if (parsed.sources) {
+                        pendingSources = parsed.sources;
+                        pushLog("evt", `sources[${parsed.sources.length}]`);
+                    } else if (parsed.suggestions) {
+                        followUps = parsed.suggestions;
+                        pushLog("evt", `suggestions[${parsed.suggestions.length}]`);
+                    } else if (parsed.error) {
+                        pushLog("err", `stream error: ${parsed.error}`);
+                        throw new Error(parsed.error);
                     }
                 }
             }
 
-            if (tokenCount > tokenBatchStart) {
-                pushLog("evt", `tokens ${tokenBatchStart + 1}..${tokenCount} (len ${fullAnswer.length})`);
-            }
             pushLog("res", `chat stream done · ${tokenCount} tokens`);
 
-            // Send remaining summary text that wasn't sent yet
-            if (ttsEnabled) {
-                const remaining = ttsFullText
-                    .slice(ttsSentBuffer.length)
-                    .trim();
-                if (remaining) {
-                    ttsQueue.push(fetchAudio(remaining));
-                }
+            if (ttsEnabled && !detailStarted) {
+                const remaining = ttsFullText.slice(ttsSentBuffer.length).trim();
+                if (remaining) ttsQueue.push(fetchAudio(remaining));
             }
 
-            history[msgIdx].answer = fullAnswer;
+            // Защита: если сервер не закрыл text-блок явно, гасим streaming-флаги.
+            history[msgIdx].blocks = history[msgIdx].blocks.map(b => {
+                if (b.type === "text" && b.streaming) {
+                    const closed = { ...b, streaming: false };
+                    blocksById.set(b.id, closed);
+                    return closed;
+                }
+                return b;
+            });
             history[msgIdx].sources = pendingSources;
             pendingSources = [];
             streamingIdx = null;
@@ -783,7 +808,10 @@
             errorMessage =
                 e instanceof Error ? e.message : "Что-то пошло не так";
             streamingIdx = null;
-            if (!history[msgIdx]?.answer) {
+            const hasAnyText = history[msgIdx]?.blocks?.some(
+                b => b.type === "text" && b.content.trim().length > 0,
+            );
+            if (!hasAnyText) {
                 history = history.slice(0, msgIdx);
             }
             state = "error";
@@ -1323,52 +1351,41 @@
             bind:this={messagesEl}
             onclick={handleContentClick}
         >
-            {#each history as msg, i}
+            {#each history as msg, i (i)}
                 {@const isStreaming = streamingIdx === i}
-                {@const parts = splitAnswer(msg.answer)}
                 <div class="msg">
                     <div class="msg-question">{msg.question}</div>
-                    {#if isStreaming && !msg.answer}
-                        <div class="msg-answer md streaming">
+                    {#if isStreaming && msg.blocks.length === 0}
+                        <div class="msg-body md streaming">
                             <span class="state-hint">Думаю…</span>
                         </div>
                     {:else}
-                        <div class="msg-answer md" class:streaming={isStreaming}>
-                            {@html renderMd(parts.summary, msg.sources)}{#if isStreaming}<span class="stream-cursor">▊</span>{/if}
-                        </div>
-                    {/if}
-                    {#if !isStreaming && parts.detail}
-                        {#if expandedDetails.has(i)}
-                            <div class="msg-detail md">
-                                {@html renderMd(parts.detail, msg.sources)}
-                            </div>
-                            <button
-                                class="detail-toggle"
-                                onclick={() => {
-                                    expandedDetails.delete(i);
-                                    expandedDetails = new Set(expandedDetails);
-                                }}
-                            >
-                                Свернуть
-                            </button>
-                        {:else}
-                            <button
-                                class="detail-toggle"
-                                onclick={() => {
-                                    expandedDetails.add(i);
-                                    expandedDetails = new Set(expandedDetails);
-                                }}
-                            >
-                                Подробнее
-                            </button>
-                        {/if}
-                    {/if}
-                    {#if msg.blocks?.length}
-                        <div class="msg-blocks">
-                            {#each msg.blocks as block}
-                                {@const Cmp = BLOCK_REGISTRY[block.type]}
-                                {#if Cmp}
-                                    <Cmp {...block} />
+                        <div class="msg-body">
+                            {#each msg.blocks as block (block.id)}
+                                {#if block.type === "text"}
+                                    <TextBlock
+                                        id={block.id}
+                                        content={block.content}
+                                        streaming={block.streaming ?? false}
+                                        sources={msg.sources}
+                                    />
+                                {:else if block.type === "image"}
+                                    <ImageBlock
+                                        url={block.url}
+                                        caption={block.caption}
+                                        alt={block.alt}
+                                        link={block.link}
+                                    />
+                                {:else if block.type === "image_gallery"}
+                                    <ImageGalleryBlock images={block.images} />
+                                {:else if block.type === "link_list"}
+                                    <LinkListBlock items={block.items} />
+                                {:else if block.type === "text_with_image"}
+                                    <TextWithImageBlock
+                                        text={block.text}
+                                        image={block.image}
+                                        imagePosition={block.imagePosition}
+                                    />
                                 {/if}
                             {/each}
                         </div>
@@ -1410,19 +1427,39 @@
                     <div class="state-hint">{stateHints[state]}</div>
                 </div>
             {:else if lastMsg}
-                <!-- Last answer (inline) — also covers live streaming into the last msg -->
-                {@const parts = splitAnswer(lastMsg.answer)}
+                <!-- Last answer (inline) — also covers live streaming into the last msg.
+                     Inline режим — text и text_with_image (компактная карточка
+                     фото + текст). Чистые image / image_gallery / link_list
+                     остаются только в развёрнутом чате. -->
                 {@const isStreaming =
                     streamingIdx !== null && streamingIdx === history.length - 1}
+                {@const inlineBlocks = lastMsg.blocks.filter(
+                    b => b.type === "text" || b.type === "text_with_image",
+                )}
                 <div class="inline-answer">
                     <div class="inline-question">{lastMsg.question}</div>
-                    {#if isStreaming && !lastMsg.answer}
-                        <div class="msg-answer md streaming">
+                    {#if isStreaming && inlineBlocks.length === 0}
+                        <div class="msg-body md streaming">
                             <span class="state-hint">Думаю…</span>
                         </div>
                     {:else}
-                        <div class="msg-answer md" class:streaming={isStreaming}>
-                            {@html renderMd(parts.summary, lastMsg.sources)}{#if isStreaming}<span class="stream-cursor">▊</span>{/if}
+                        <div class="msg-body inline-body">
+                            {#each inlineBlocks as block (block.id)}
+                                {#if block.type === "text"}
+                                    <TextBlock
+                                        id={block.id}
+                                        content={block.content}
+                                        streaming={block.streaming ?? false}
+                                        sources={lastMsg.sources}
+                                    />
+                                {:else if block.type === "text_with_image"}
+                                    <TextWithImageBlock
+                                        text={block.text}
+                                        image={block.image}
+                                        imagePosition={block.imagePosition}
+                                    />
+                                {/if}
+                            {/each}
                         </div>
                     {/if}
                 </div>
@@ -1652,6 +1689,7 @@
     open={modalOpen}
     initialTab={modalTab}
     openPath={modalOpenPath}
+    imageView={imagePreviewState.value}
     onclose={closeModal}
 />
 
@@ -1859,6 +1897,21 @@
         font-size: 14px;
         color: var(--color-text);
         max-width: 85%;
+    }
+
+    /* ADR-025: единый контейнер для блоков ответа — текст, картинки, ссылки,
+       text_with_image — идут единой лентой с общим ритмом. */
+    .msg-body {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        align-items: stretch;
+    }
+    .msg-body.streaming {
+        align-self: flex-start;
+    }
+    .msg-body.inline-body {
+        gap: 10px;
     }
 
     /* ═══════════════════════════════════════════════════════════════════════════ */

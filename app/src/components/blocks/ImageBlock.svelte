@@ -1,4 +1,6 @@
 <script lang="ts">
+    import { openImagePreview } from "../../lib/imagePreview.svelte";
+
     interface Props {
         url: string;
         caption?: string | null;
@@ -7,6 +9,10 @@
     }
 
     let { url, caption = null, alt = null, link = null }: Props = $props();
+
+    function expand() {
+        openImagePreview({ url, caption, alt });
+    }
 </script>
 
 <figure class="image-block">
@@ -15,7 +21,9 @@
             <img src={url} alt={alt ?? caption ?? ""} loading="lazy" />
         </a>
     {:else}
-        <img src={url} alt={alt ?? caption ?? ""} loading="lazy" />
+        <button type="button" class="zoom-btn" onclick={expand} aria-label="Открыть на весь экран">
+            <img src={url} alt={alt ?? caption ?? ""} loading="lazy" />
+        </button>
     {/if}
     {#if caption}
         <figcaption>{caption}</figcaption>
@@ -49,5 +57,14 @@
     }
     a {
         display: block;
+    }
+    .zoom-btn {
+        display: block;
+        width: 100%;
+        padding: 0;
+        margin: 0;
+        border: none;
+        background: none;
+        cursor: zoom-in;
     }
 </style>

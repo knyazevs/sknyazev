@@ -24,6 +24,7 @@
     type CodeDir, type CodeFile,
     type Commit, type CodeSearchResult,
   } from '../lib/docs-client.js';
+  import type { ImagePreview } from '../lib/imagePreview.svelte';
 
   hljs.registerLanguage('kotlin', kotlin);
   hljs.registerLanguage('typescript', typescript);
@@ -63,12 +64,14 @@
     'scripts': 'scripts',
   };
 
-  let { open = false, initialTab = 'docs', openPath = null, onclose }: {
+  let { open = false, initialTab = 'docs', openPath = null, imageView = null, onclose }: {
     open?: boolean;
     /** Которая вкладка открывается при монтировании/открытии. */
     initialTab?: ContentTab;
     /** Путь для немедленной навигации. Для docs — относительно docs/, для code — полный (server/src/...). */
     openPath?: string | null;
+    /** Если задан — модалка переключается в image-режим: табы скрыты, картинка во весь экран. */
+    imageView?: ImagePreview | null;
     onclose?: () => void;
   } = $props();
 
@@ -616,7 +619,38 @@
   }
 </script>
 
-{#if open}
+{#if open && imageView}
+  <!-- ─── Image fullscreen view ─────────────────────────────────────────────
+       Отдельная ветка без табов: клик по картинке в чате раскрывает её
+       на весь экран. Оверлей закрывает по клику вне картинки и по Esc
+       (общий handler выше). -->
+  <div
+    class="overlay overlay-image"
+    role="dialog"
+    aria-modal="true"
+    aria-label="Просмотр изображения"
+    onclick={() => onclose?.()}
+  >
+    <button
+      class="close-btn image-close"
+      onclick={(e) => { e.stopPropagation(); onclose?.(); }}
+      aria-label="Закрыть"
+      title="Закрыть"
+    >
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+        <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+      </svg>
+    </button>
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <figure class="image-fullscreen" onclick={(e) => e.stopPropagation()}>
+      <img src={imageView.url} alt={imageView.alt ?? imageView.caption ?? ''} />
+      {#if imageView.caption}
+        <figcaption>{imageView.caption}</figcaption>
+      {/if}
+    </figure>
+  </div>
+{:else if open}
   <div
     class="overlay"
     role="dialog"
@@ -1000,6 +1034,52 @@
     padding: 24px;
     outline: none;
     animation: fadeOverlay 0.15s ease;
+  }
+
+  /* ─── Image fullscreen view ────────────────────── */
+
+  .overlay-image {
+    padding: 0;
+    background: rgba(0, 0, 0, 0.88);
+  }
+
+  .image-fullscreen {
+    margin: 0;
+    max-width: 95vw;
+    max-height: 95vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    animation: slideUp 0.18s ease;
+  }
+
+  .image-fullscreen img {
+    display: block;
+    max-width: 95vw;
+    max-height: 90vh;
+    width: auto;
+    height: auto;
+    object-fit: contain;
+    border-radius: 6px;
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
+  }
+
+  .image-fullscreen figcaption {
+    max-width: 80vw;
+    font-size: 13px;
+    color: rgba(255, 255, 255, 0.75);
+    text-align: center;
+    line-height: 1.4;
+  }
+
+  .image-close {
+    position: fixed;
+    top: 16px;
+    right: 16px;
+    z-index: 1;
+    background: rgba(0, 0, 0, 0.4);
   }
 
   @keyframes fadeOverlay {

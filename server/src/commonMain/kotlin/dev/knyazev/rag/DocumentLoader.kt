@@ -1,5 +1,7 @@
 package dev.knyazev.rag
 
+import dev.knyazev.ui.ImageBlock
+import dev.knyazev.ui.ImageGalleryBlock
 import dev.knyazev.ui.UiBlock
 import okio.FileSystem
 import okio.Path
@@ -85,10 +87,19 @@ object DocumentLoader {
         val content = lines.joinToString("\n").trim()
         if (content.isNotBlank()) {
             val breadcrumb = buildBreadcrumb(filePath, documentTitle, sectionTitle)
-            val blocks = BlockExtractor.extract(content, filePath).blocks
+            val blocks = filterDecorativeImages(filePath, BlockExtractor.extract(content, filePath).blocks)
             chunks.add(DocumentChunk(filePath, sectionTitle, content, breadcrumb, sourceFile, blocks))
         }
         lines.clear()
+    }
+
+    // Фото в docs/profile/ — оформление карточки, а не иллюстрация контента. Чанк профиля
+    // уходит в топ RRF почти на любой запрос о Сергее, и без этой фильтрации его фото
+    // автоматом улетало C-блоком к каждому ответу. URL остаётся в content для LLM —
+    // она сама решит показать фото через render_text_with_image, когда это уместно.
+    private fun filterDecorativeImages(filePath: String, blocks: List<UiBlock>): List<UiBlock> {
+        if (!filePath.startsWith("profile/")) return blocks
+        return blocks.filterNot { it is ImageBlock || it is ImageGalleryBlock }
     }
 
     private fun buildBreadcrumb(filePath: String, documentTitle: String?, sectionTitle: String): String {
