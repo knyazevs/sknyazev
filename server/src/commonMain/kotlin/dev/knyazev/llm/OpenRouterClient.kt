@@ -1,5 +1,6 @@
 package dev.knyazev.llm
 
+import io.github.oshai.kotlinlogging.KotlinLogging
 import io.ktor.client.*
 import io.ktor.client.plugins.*
 import io.ktor.client.request.*
@@ -10,6 +11,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.*
+
+private val logger = KotlinLogging.logger("OpenRouterClient")
 
 class OpenRouterClient(
     private val apiKey: String,
@@ -48,15 +51,38 @@ class OpenRouterClient(
             header(HttpHeaders.ContentType, ContentType.Application.Json)
             setBody(requestBody.toString())
         }.execute { response ->
+            if (response.status.value !in 200..299) {
+                val body = response.bodyAsText().take(500)
+                error("OpenRouter ${response.status}: $body")
+            }
             val channel: ByteReadChannel = response.bodyAsChannel()
+            var emitted = 0
+            var firstUnparsed: String? = null
             while (!channel.isClosedForRead) {
                 val line = channel.readLine() ?: break
                 if (!line.startsWith("data: ")) continue
                 val data = line.removePrefix("data: ").trim()
                 if (data == "[DONE]") break
+                // Пропускаем keep-alive комментарии OpenRouter вида ": OPENROUTER PROCESSING"
+                if (data.startsWith(":")) continue
                 val token = extractToken(data)
-                if (token != null) emit(token)
+                if (token != null) {
+                    emit(token)
+                    emitted++
+                } else if (firstUnparsed == null) {
+                    firstUnparsed = data.take(300)
+                }
             }
+            if (emitted == 0) {
+                // Ответ 2xx, но ни одного content-токена — вероятно, формат чанка
+                // не содержит delta.content (reasoning-only, пустой ответ, фильтр).
+                // Бросаем, чтобы ChatRoutes.catch показал ошибку пользователю.
+                error(
+                    "OpenRouter returned no content tokens (status=${response.status}, " +
+                        "firstUnparsed=${firstUnparsed ?: "<no data lines>"})"
+                )
+            }
+            logger.debug { "streamChat emitted $emitted tokens" }
         }
     }
 
