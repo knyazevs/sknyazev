@@ -5,6 +5,8 @@
     import { marked } from "marked";
     import CosmicOrb from "./CosmicOrb.svelte";
     import ContentModal, { type ContentTab } from "./ContentModal.svelte";
+    import DebugLogStream from "./DebugLogStream.svelte";
+    import { pushLog } from "../lib/debugLog.svelte";
 
     let { autoOpenTab = null }: { autoOpenTab?: ContentTab | null } = $props();
 
@@ -42,7 +44,7 @@
     let state: PanelState = $state("idle");
     let inputText = $state("");
     let errorMessage = $state("");
-    let streamingText = $state("");
+    let streamingIdx = $state<number | null>(null);
     let history: Message[] = $state([]);
     let modalOpen = $state(false);
     let modalTab: ContentTab = $state("docs");
@@ -263,6 +265,7 @@
         acTimer = setTimeout(async () => {
             acAbort = new AbortController();
             try {
+                pushLog("req", `POST /api/autocomplete len=${trimmed.length}`);
                 const res = await fetch(`${BACKEND_URL}/api/autocomplete`, {
                     method: "POST",
                     headers: {
@@ -272,8 +275,9 @@
                     body: JSON.stringify({ input: trimmed }),
                     signal: acAbort.signal,
                 });
-                if (!res.ok) return;
+                if (!res.ok) { pushLog("err", `autocomplete ${res.status}`); return; }
                 const data = await res.json();
+                pushLog("res", `autocomplete 200${data.completion ? ` → +${data.completion.length}ch` : " ∅"}`);
                 // Only show if input hasn't changed while we waited
                 if (inputText.trim() === trimmed && data.completion) {
                     ghostText = data.completion;
@@ -357,17 +361,77 @@
     function clearChat() {
         history = [];
         followUps = [];
-        streamingText = "";
+        streamingIdx = null;
         expandedDetails = new Set();
         persistChat();
         if (chatMode) closeChatMode();
     }
 
     let matrixMode = $state(false);
+    let matrixCanvas: HTMLCanvasElement | undefined = $state();
     function activateMatrix() {
         matrixMode = true;
-        setTimeout(() => { matrixMode = false; }, 4000);
+        setTimeout(() => { matrixMode = false; }, 6000);
     }
+
+    $effect(() => {
+        if (!matrixMode || !matrixCanvas) return;
+        const canvas = matrixCanvas;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+
+        const FONT_SIZE = 16;
+        const CHARS =
+            "アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン" +
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        let drops: number[] = [];
+
+        function resize() {
+            const dpr = window.devicePixelRatio || 1;
+            canvas.width = window.innerWidth * dpr;
+            canvas.height = window.innerHeight * dpr;
+            canvas.style.width = `${window.innerWidth}px`;
+            canvas.style.height = `${window.innerHeight}px`;
+            ctx!.setTransform(dpr, 0, 0, dpr, 0, 0);
+            const cols = Math.ceil(window.innerWidth / FONT_SIZE);
+            drops = Array.from({ length: cols }, () => Math.random() * -40);
+            ctx!.fillStyle = "#000";
+            ctx!.fillRect(0, 0, window.innerWidth, window.innerHeight);
+        }
+        resize();
+        window.addEventListener("resize", resize);
+
+        let raf = 0;
+        function draw() {
+            ctx!.fillStyle = "rgba(0, 0, 0, 0.06)";
+            ctx!.fillRect(0, 0, window.innerWidth, window.innerHeight);
+            ctx!.font = `${FONT_SIZE}px "JetBrains Mono", monospace`;
+            ctx!.textBaseline = "top";
+
+            for (let i = 0; i < drops.length; i++) {
+                const ch = CHARS[Math.floor(Math.random() * CHARS.length)];
+                const x = i * FONT_SIZE;
+                const y = drops[i] * FONT_SIZE;
+
+                ctx!.fillStyle = "#cfffd0";
+                ctx!.fillText(ch, x, y);
+                ctx!.fillStyle = "#00ff66";
+                ctx!.fillText(ch, x, y - FONT_SIZE);
+
+                if (y > window.innerHeight && Math.random() > 0.975) {
+                    drops[i] = 0;
+                }
+                drops[i]++;
+            }
+            raf = requestAnimationFrame(draw);
+        }
+        draw();
+
+        return () => {
+            cancelAnimationFrame(raf);
+            window.removeEventListener("resize", resize);
+        };
+    });
 
     // Dropdown state
     let slashOpen = $state(false);
@@ -474,16 +538,23 @@
 
         (async () => {
             try {
+                pushLog("req", `GET /api/suggestions`);
                 const res = await fetch(`${BACKEND_URL}/api/suggestions`, {
                     headers: await authHeaders(),
                 });
                 if (res.ok) {
                     const data = await res.json();
-                    if (data.suggestions?.length)
+                    if (data.suggestions?.length) {
                         suggestions = data.suggestions;
+                        pushLog("res", `suggestions 200 n=${data.suggestions.length}`);
+                    } else {
+                        pushLog("res", `suggestions 200 ∅`);
+                    }
+                } else {
+                    pushLog("err", `suggestions ${res.status}`);
                 }
             } catch {
-                /* use defaults */
+                pushLog("err", `suggestions network`);
             }
         })();
 
@@ -506,15 +577,21 @@
         if (!question.trim() || state === "thinking") return;
         inputText = "";
         errorMessage = "";
-        streamingText = "";
         followUps = [];
         clearAutocomplete();
-        state = "thinking";
 
         const questionText = question.trim();
+        history = [
+            ...history,
+            { question: questionText, answer: "", sources: [] },
+        ];
+        const msgIdx = history.length - 1;
+        streamingIdx = msgIdx;
+        state = "thinking";
         if (chatMode) await scrollMessages();
 
         try {
+            pushLog("req", `POST /api/chat len=${questionText.length}`);
             const response = await fetch(`${BACKEND_URL}/api/chat`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json", ...(await authHeaders()) },
@@ -522,6 +599,7 @@
             });
 
             if (!response.ok) {
+                pushLog("err", `chat ${response.status}`);
                 const body = await response.json().catch(() => null);
                 throw new Error(
                     body?.error ?? `Server error: ${response.status}`,
@@ -530,9 +608,13 @@
             if (!response.body) {
                 throw new Error(`Server error: ${response.status}`);
             }
+            pushLog("res", `chat 200 stream open`);
 
             state = "speaking";
             let fullAnswer = "";
+            let tokenCount = 0;
+            let tokenBatchStart = 0;
+            const TOKEN_BATCH = 15;
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
 
@@ -555,7 +637,12 @@
                         const parsed = JSON.parse(data);
                         if (parsed.token) {
                             fullAnswer += parsed.token;
-                            streamingText = fullAnswer;
+                            tokenCount += 1;
+                            if (tokenCount - tokenBatchStart >= TOKEN_BATCH) {
+                                pushLog("evt", `tokens ${tokenBatchStart + 1}..${tokenCount} (len ${fullAnswer.length})`);
+                                tokenBatchStart = tokenCount;
+                            }
+                            history[msgIdx].answer = fullAnswer;
                             if (chatMode) await scrollMessages();
 
                             // Track summary portion for TTS (stop at DETAIL marker)
@@ -600,16 +687,26 @@
                         }
                         if (parsed.sources) {
                             pendingSources = parsed.sources;
+                            pushLog("evt", `sources[${parsed.sources.length}]`);
                         }
                         if (parsed.suggestions) {
                             followUps = parsed.suggestions;
+                            pushLog("evt", `suggestions[${parsed.suggestions.length}]`);
                         }
-                        if (parsed.error) throw new Error(parsed.error);
+                        if (parsed.error) {
+                            pushLog("err", `stream error: ${parsed.error}`);
+                            throw new Error(parsed.error);
+                        }
                     } catch {
                         // partial JSON — skip
                     }
                 }
             }
+
+            if (tokenCount > tokenBatchStart) {
+                pushLog("evt", `tokens ${tokenBatchStart + 1}..${tokenCount} (len ${fullAnswer.length})`);
+            }
+            pushLog("res", `chat stream done · ${tokenCount} tokens`);
 
             // Send remaining summary text that wasn't sent yet
             if (ttsEnabled) {
@@ -621,16 +718,10 @@
                 }
             }
 
-            history = [
-                ...history,
-                {
-                    question: questionText,
-                    answer: fullAnswer,
-                    sources: pendingSources,
-                },
-            ];
+            history[msgIdx].answer = fullAnswer;
+            history[msgIdx].sources = pendingSources;
             pendingSources = [];
-            streamingText = "";
+            streamingIdx = null;
             persistChat();
             if (chatMode) await scrollMessages();
 
@@ -649,6 +740,10 @@
         } catch (e: unknown) {
             errorMessage =
                 e instanceof Error ? e.message : "Что-то пошло не так";
+            streamingIdx = null;
+            if (!history[msgIdx]?.answer) {
+                history = history.slice(0, msgIdx);
+            }
             state = "error";
         }
     }
@@ -668,13 +763,19 @@
     }
 
     async function fetchAudio(text: string): Promise<Blob> {
+        pushLog("req", `POST /api/tts len=${text.length}`);
         const response = await fetch(`${BACKEND_URL}/api/tts`, {
             method: "POST",
             headers: { "Content-Type": "application/json", ...(await authHeaders()) },
             body: JSON.stringify({ text }),
         });
-        if (!response.ok) throw new Error(`TTS error: ${response.status}`);
-        return response.blob();
+        if (!response.ok) {
+            pushLog("err", `tts ${response.status}`);
+            throw new Error(`TTS error: ${response.status}`);
+        }
+        const blob = await response.blob();
+        pushLog("res", `tts 200 · ${Math.round(blob.size / 1024)}kb`);
+        return blob;
     }
 
     function playBlob(blob: Blob): Promise<void> {
@@ -738,13 +839,18 @@
         try {
             const fd = new FormData();
             fd.append("audio", blob, "audio.webm");
+            pushLog("req", `POST /api/asr · ${Math.round(blob.size / 1024)}kb`);
             const response = await fetch(`${BACKEND_URL}/api/asr`, {
                 method: "POST",
                 headers: { ...(await authHeaders()) },
                 body: fd,
             });
-            if (!response.ok) throw new Error(`ASR error: ${response.status}`);
+            if (!response.ok) {
+                pushLog("err", `asr ${response.status}`);
+                throw new Error(`ASR error: ${response.status}`);
+            }
             const { text } = await response.json();
+            pushLog("res", `asr 200 → "${(text ?? "").slice(0, 24)}${(text ?? "").length > 24 ? "…" : ""}"`);
             if (text?.trim()) {
                 await submitQuery(text.trim());
             } else {
@@ -765,7 +871,7 @@
         mediaRecorder = null;
         stopVoiceAnalysis();
         state = "idle";
-        streamingText = "";
+        streamingIdx = null;
         errorMessage = "";
     }
 
@@ -941,7 +1047,6 @@
 
     const stateHints: Partial<Record<PanelState, string>> = {
         listening: "Слушаю…",
-        thinking: "Думаю…",
     };
 
     // ─── Derived ──────────────────────────────────────────────────────────────
@@ -961,6 +1066,9 @@
 
 <!-- ─── Full-screen orb background ──────────────────────────────────────── -->
 <div class="orb-bg" class:chat-mode={chatMode} class:matrix={matrixMode} aria-hidden="true">
+    {#if debugMode}
+        <DebugLogStream />
+    {/if}
     <CosmicOrb
         {state}
         centerY={chatMode ? 0 : 0.07}
@@ -970,6 +1078,10 @@
         ondebugclose={disableDebug}
     />
 </div>
+
+{#if matrixMode}
+    <canvas class="matrix-rain" bind:this={matrixCanvas} aria-hidden="true"></canvas>
+{/if}
 
 <!-- Клик-таргет: круг над центром орба.
      clip-path: circle делает кликабельной только круглую зону —
@@ -1170,13 +1282,20 @@
             onclick={handleContentClick}
         >
             {#each history as msg, i}
+                {@const isStreaming = streamingIdx === i}
                 {@const parts = splitAnswer(msg.answer)}
                 <div class="msg">
                     <div class="msg-question">{msg.question}</div>
-                    <div class="msg-answer md">
-                        {@html renderMd(parts.summary, msg.sources)}
-                    </div>
-                    {#if parts.detail}
+                    {#if isStreaming && !msg.answer}
+                        <div class="msg-answer md streaming">
+                            <span class="state-hint">Думаю…</span>
+                        </div>
+                    {:else}
+                        <div class="msg-answer md" class:streaming={isStreaming}>
+                            {@html renderMd(parts.summary, msg.sources)}{#if isStreaming}<span class="stream-cursor">▊</span>{/if}
+                        </div>
+                    {/if}
+                    {#if !isStreaming && parts.detail}
                         {#if expandedDetails.has(i)}
                             <div class="msg-detail md">
                                 {@html renderMd(parts.detail, msg.sources)}
@@ -1202,7 +1321,7 @@
                             </button>
                         {/if}
                     {/if}
-                    {#if msg.sources?.length}
+                    {#if !isStreaming && msg.sources?.length}
                         <div class="msg-sources">
                             {#each msg.sources as src, si}
                                 <button
@@ -1217,16 +1336,6 @@
                     {/if}
                 </div>
             {/each}
-            {#if streamingText}
-                {@const streamParts = splitAnswer(streamingText)}
-                <div class="msg">
-                    <div class="msg-answer md streaming">
-                        {@html renderMd(streamParts.summary)}<span
-                            class="stream-cursor">▊</span
-                        >
-                    </div>
-                </div>
-            {/if}
             {#if state === "error"}
                 <div class="msg">
                     <div class="msg-error">
@@ -1244,28 +1353,26 @@
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div class="inline-area" onclick={handleContentClick}>
             {#if stateHints[state]}
-                <!-- State hint: thinking / listening -->
+                <!-- State hint: listening -->
                 <div class="orb-hint">
                     <div class="state-hint">{stateHints[state]}</div>
                 </div>
-            {:else if streamingText}
-                <!-- Streaming answer -->
-                {@const streamParts = splitAnswer(streamingText)}
-                <div class="inline-answer">
-                    <div class="msg-answer md streaming">
-                        {@html renderMd(streamParts.summary)}<span
-                            class="stream-cursor">▊</span
-                        >
-                    </div>
-                </div>
             {:else if lastMsg}
-                <!-- Last answer (inline) -->
+                <!-- Last answer (inline) — also covers live streaming into the last msg -->
                 {@const parts = splitAnswer(lastMsg.answer)}
+                {@const isStreaming =
+                    streamingIdx !== null && streamingIdx === history.length - 1}
                 <div class="inline-answer">
                     <div class="inline-question">{lastMsg.question}</div>
-                    <div class="msg-answer md">
-                        {@html renderMd(parts.summary, lastMsg.sources)}
-                    </div>
+                    {#if isStreaming && !lastMsg.answer}
+                        <div class="msg-answer md streaming">
+                            <span class="state-hint">Думаю…</span>
+                        </div>
+                    {:else}
+                        <div class="msg-answer md" class:streaming={isStreaming}>
+                            {@html renderMd(parts.summary, lastMsg.sources)}{#if isStreaming}<span class="stream-cursor">▊</span>{/if}
+                        </div>
+                    {/if}
                 </div>
             {:else}
                 <!-- Welcome -->
@@ -2310,5 +2417,23 @@
     .orb-bg.matrix :global(canvas) {
         filter: hue-rotate(95deg) saturate(1.8) brightness(1.1);
         transition: filter 0.3s ease;
+    }
+
+    .matrix-rain {
+        position: fixed;
+        inset: 0;
+        width: 100vw;
+        height: 100vh;
+        pointer-events: none;
+        z-index: 2;
+        mix-blend-mode: screen;
+        animation: matrixFade 6s ease-out forwards;
+    }
+
+    @keyframes matrixFade {
+        0%   { opacity: 0; }
+        10%  { opacity: 1; }
+        85%  { opacity: 1; }
+        100% { opacity: 0; }
     }
 </style>
