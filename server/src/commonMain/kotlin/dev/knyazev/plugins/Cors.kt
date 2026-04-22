@@ -17,5 +17,6 @@ fun Application.configureCors(allowedOrigins: String) {
         allowHeader(HttpHeaders.ContentType)
         allowHeader(HttpHeaders.Accept)
         allowHeader("X-Fingerprint")
+        allowHeader("X-Api-Session")
     }
 }

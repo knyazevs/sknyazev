@@ -4,6 +4,8 @@ dist/
 .astro/
 # generated CV — recreated by `bun run build:cv`
 app/public/cv.pdf
+# статические данные для прод-фронта — генерируются `bun run build:data`
+app/public/data/
 
 # dependencies
 node_modules/

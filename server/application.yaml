@@ -22,7 +22,9 @@ app:
     codePath: "$CODE_PATH:.."
     cachePath: "$CACHE_PATH:.embedding-cache.json"
   cors:
-    allowedOrigin: "$CORS_ALLOWED_ORIGIN:http://localhost:4321,https://knyazevs.github.io"
+    # 4321 — дефолтный порт Astro dev; 4322/4323 — на случай, если 4321 занят
+    # висящим процессом и dev-сервер ушёл на соседний порт.
+    allowedOrigin: "$CORS_ALLOWED_ORIGIN:http://localhost:4321,http://localhost:4322,http://localhost:4323,https://knyazevs.github.io"
   session:
     # Намеренно без дефолта — если переменная не задана, AppConfig.from() бросит
     # исключение на строке чтения (getString(), а не propertyOrNull).

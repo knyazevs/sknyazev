@@ -22,6 +22,8 @@ jobs:
       PUBLIC_BACKEND_URL: ${{ vars.PUBLIC_BACKEND_URL }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # нужен полный git log для commits.json
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -40,6 +42,9 @@ jobs:
 
       - name: Build CV PDF
         run: bun run build:cv
+
+      - name: Build static data bundle (docs/code tree, commits)
+        run: bun run build:data
 
       - name: Build app (Astro)
         run: bun run build:app

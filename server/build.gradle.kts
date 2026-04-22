@@ -32,6 +32,18 @@ kotlin {
         }
     }
 
+    // Локальный dev-таргет для Apple Silicon: прод так же живёт на K/N (linuxX64),
+    // но linuxX64-бинарь не исполняется на macOS — поэтому для разработки
+    // на Mac держим параллельный нативный таргет.
+    macosArm64 {
+        binaries {
+            executable {
+                entryPoint = "dev.knyazev.main"
+                baseName = "knyazevs-server"
+            }
+        }
+    }
+
     sourceSets {
         commonMain.dependencies {
             implementation(libs.bundles.ktor.server.common)
@@ -60,6 +72,12 @@ kotlin {
         val linuxX64Main by getting {
             dependencies {
                 implementation(libs.ktor.client.curl.linuxx64)
+            }
+        }
+
+        val macosArm64Main by getting {
+            dependencies {
+                implementation(libs.ktor.client.darwin)
             }
         }
     }
@@ -92,3 +110,49 @@ tasks.register("shadowJar") {
     description = "Alias for jvmFatJar — preserves existing Dockerfile build command."
     dependsOn("jvmFatJar")
 }
+
+// ─── Автозагрузка server/.env для локальных run-тасков ────────────────────────
+// Ktor читает $VAR из окружения процесса (на K/N — getenv), а gradlew сам
+// .env не грузит. Поэтому перед стартом K/N run-тасков парсим server/.env
+// и докидываем пары в Exec.environment. Явно экспортированные переменные
+// шелла имеют приоритет над .env — это обычная dotenv-семантика.
+fun parseDotenv(file: java.io.File): Map<String, String> {
+    if (!file.exists()) return emptyMap()
+    return file.readLines()
+        .asSequence()
+        .map { it.trim() }
+        .filter { it.isNotEmpty() && !it.startsWith("#") }
+        .mapNotNull { line ->
+            val idx = line.indexOf('=')
+            if (idx <= 0) return@mapNotNull null
+            val key = line.substring(0, idx).trim()
+            var value = line.substring(idx + 1).trim()
+            // Снимаем парные кавычки, если есть
+            val quoted = value.length >= 2 && (
+                (value.startsWith("\"") && value.endsWith("\"")) ||
+                (value.startsWith("'") && value.endsWith("'"))
+            )
+            if (quoted) value = value.substring(1, value.length - 1)
+            key to value
+        }
+        .toMap()
+}
+
+val dotenvFile = projectDir.resolve(".env")
+
+tasks.withType<Exec>().configureEach {
+    val isNativeRun = name.startsWith("runReleaseExecutable") ||
+                      name.startsWith("runDebugExecutable")
+    if (!isNativeRun) return@configureEach
+    doFirst {
+        val vars = parseDotenv(dotenvFile)
+        if (vars.isEmpty()) return@doFirst
+        val applied = vars.filter { (k, _) -> System.getenv(k).isNullOrEmpty() }
+        applied.forEach { (k, v) -> environment(k, v) }
+        logger.lifecycle(
+            "[dotenv] loaded ${applied.size}/${vars.size} keys from ${dotenvFile.name} " +
+                "(${vars.size - applied.size} already in shell env)"
+        )
+    }
+}
+

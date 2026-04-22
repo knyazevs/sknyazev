@@ -5,7 +5,8 @@ export const GITHUB = {
 };
 
 export const BACKEND_URL =
-  import.meta.env.PUBLIC_BACKEND_URL ?? "http://localhost:8080";
+  (import.meta as { env?: { PUBLIC_BACKEND_URL?: string } }).env?.PUBLIC_BACKEND_URL
+  ?? "http://localhost:8080";
 
 // Файлы, которые исключаются из навигации
 export const EXCLUDE_FILES = ["how-to.md"];
