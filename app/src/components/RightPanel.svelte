@@ -7,11 +7,29 @@
     import ContentModal, { type ContentTab } from "./ContentModal.svelte";
     import DebugLogStream from "./DebugLogStream.svelte";
     import { pushLog } from "../lib/debugLog.svelte";
+    import { BLOCK_REGISTRY, type UiBlock } from "./blocks/BlockRegistry";
 
     let { autoOpenTab = null }: { autoOpenTab?: ContentTab | null } = $props();
 
+    // ADR-024: картинки и внешние/относительные ссылки представлены UI-блоками,
+    // поэтому вычищаем их из markdown перед рендерингом — иначе будет дубль.
+    // Якорные ссылки (`[...](#section)`) оставляем. Inline `[text](url)` заменяем
+    // на `text`, чтобы абзац остался связным.
+    function sanitizeMarkdown(text: string): string {
+        return text
+            .split("\n")
+            .filter((line) => !/^\s*!\[[^\]]*\]\([^)\s]+\)\s*$/.test(line))
+            .join("\n")
+            .replace(
+                /(?<!!)\[([^\]]+)\]\(([^)\s]+)\)/g,
+                (match, title, url) =>
+                    url.startsWith("#") ? match : title,
+            );
+    }
+
     function renderMd(text: string, sources?: string[]): string {
-        let html = marked.parse(text, { async: false }) as string;
+        const clean = sanitizeMarkdown(text);
+        let html = marked.parse(clean, { async: false }) as string;
         if (sources?.length) {
             html = html.replace(/\[(\d+)\]/g, (match, num) => {
                 const idx = parseInt(num, 10) - 1;
@@ -30,6 +48,7 @@
         question: string;
         answer: string;
         sources: string[];
+        blocks: UiBlock[];
     }
 
     function splitAnswer(text: string): { summary: string; detail: string } {
@@ -353,7 +372,7 @@
     }
 
     function injectReply(question: string, answer: string) {
-        history = [...history, { question, answer, sources: [] }];
+        history = [...history, { question, answer, sources: [], blocks: [] }];
         persistChat();
         if (chatMode) scrollMessages();
     }
@@ -583,7 +602,7 @@
         const questionText = question.trim();
         history = [
             ...history,
-            { question: questionText, answer: "", sources: [] },
+            { question: questionText, answer: "", sources: [], blocks: [] },
         ];
         const msgIdx = history.length - 1;
         streamingIdx = msgIdx;
@@ -684,6 +703,29 @@
                                     }
                                 }
                             }
+                        }
+                        if (parsed.block) {
+                            const incoming = parsed.block as UiBlock;
+                            const prev = history[msgIdx].blocks ?? [];
+                            // Дедуп: text_with_image выигрывает у одиночного image с тем же URL,
+                            // и наоборот — уже показанный text_with_image не даёт повторно вставить
+                            // отдельный image того же ресурса.
+                            let next = prev;
+                            if (incoming.type === "text_with_image") {
+                                const url = incoming.image.url;
+                                next = prev.filter(b => !(b.type === "image" && b.url === url));
+                            } else if (incoming.type === "image") {
+                                const already = prev.some(
+                                    b => b.type === "text_with_image" && b.image.url === incoming.url,
+                                );
+                                if (already) {
+                                    pushLog("evt", `block:image dedup`);
+                                    continue;
+                                }
+                            }
+                            history[msgIdx].blocks = [...next, incoming];
+                            pushLog("evt", `block:${incoming.type}`);
+                            if (chatMode) await scrollMessages();
                         }
                         if (parsed.sources) {
                             pendingSources = parsed.sources;
@@ -1321,6 +1363,16 @@
                             </button>
                         {/if}
                     {/if}
+                    {#if msg.blocks?.length}
+                        <div class="msg-blocks">
+                            {#each msg.blocks as block}
+                                {@const Cmp = BLOCK_REGISTRY[block.type]}
+                                {#if Cmp}
+                                    <Cmp {...block} />
+                                {/if}
+                            {/each}
+                        </div>
+                    {/if}
                     {#if !isStreaming && msg.sources?.length}
                         <div class="msg-sources">
                             {#each msg.sources as src, si}
@@ -1935,6 +1987,13 @@
     }
 
     /* ─── Source chips (below answer) ──────── */
+
+    .msg-blocks {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        margin-top: 10px;
+    }
 
     .msg-sources {
         display: flex;

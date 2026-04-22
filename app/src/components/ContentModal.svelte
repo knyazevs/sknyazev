@@ -1260,6 +1260,18 @@
     margin: 16px 0 6px;
   }
 
+  .doc-content :global(img) {
+    display: block;
+    max-width: 100%;
+    max-height: 50vh;
+    width: auto;
+    height: auto;
+    object-fit: contain;
+    margin: 12px auto;
+    border-radius: 8px;
+    border: 1px solid var(--color-border);
+  }
+
   .doc-content :global(p)          { margin: 0 0 12px; }
   .doc-content :global(ul),
   .doc-content :global(ol)         { padding-left: 20px; margin: 0 0 12px; }

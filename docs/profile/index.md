@@ -4,8 +4,9 @@ name: Сергей Князев
 title: Technical Lead / Architect · Kotlin / Java
 birth_year: 1996
 location: Удалённо · Россия
-photo: "private/photo.jpg"
+photo: "docs/profile/profile.png"
 contacts:
+  site: "sknyazev.pro"
   github: knyazevs
   linkedin: s-knyazev
   telegram: "@sknyazev"
@@ -14,6 +15,8 @@ contacts:
 ---
 
 # Сергей Князев — Технический лидер / Архитектор
+
+![Сергей Князев](profile.png)
 
 ## Кратко
 

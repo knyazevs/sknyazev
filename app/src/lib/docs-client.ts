@@ -62,10 +62,41 @@ export async function getDocTree(): Promise<DocSection[]> {
 }
 
 export async function getDocContent(filePath: string): Promise<string> {
-  if (import.meta.env.DEV) {
-    return fetchLocalContent(filePath);
-  }
-  return fetchStaticContent(filePath);
+  const raw = import.meta.env.DEV
+    ? await fetchLocalContent(filePath)
+    : await fetchStaticContent(filePath);
+  return rewriteRelativeImagePaths(filePath, raw);
+}
+
+// ADR-024: тот же алгоритм применяется build-скриптом к prod-копиям, но в dev сервер
+// отдаёт оригинальный markdown, поэтому переписываем пути на лету. В prod копии уже
+// абсолютные (`/images/...`) — regex их пропустит, повторного вреда не будет.
+const IMG_REGEX = /(!\[[^\]]*\]\()([^)\s]+)(\))/g;
+
+function rewriteRelativeImagePaths(filePath: string, markdown: string): string {
+  const relFromDocs = filePath.startsWith('docs/') ? filePath.slice('docs/'.length) : filePath;
+  const docDir = relFromDocs.includes('/') ? relFromDocs.slice(0, relFromDocs.lastIndexOf('/')) : '';
+  const lines = markdown.split('\n');
+  let inFence = false;
+  return lines
+    .map(line => {
+      if (/^\s*```/.test(line)) {
+        inFence = !inFence;
+        return line;
+      }
+      if (inFence) return line;
+      return line.replace(IMG_REGEX, (match, open: string, url: string, close: string, offset: number) => {
+        const before = line.slice(0, offset);
+        const backticks = (before.match(/`/g) ?? []).length;
+        if (backticks % 2 === 1) return match;
+        if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('#') || url.startsWith('/')) {
+          return match;
+        }
+        const resolved = docDir === '' ? url : `${docDir}/${url}`;
+        return `${open}/images/${resolved}${close}`;
+      });
+    })
+    .join('\n');
 }
 
 // ─── Public API (code) ───────────────────────────────────────────────────────

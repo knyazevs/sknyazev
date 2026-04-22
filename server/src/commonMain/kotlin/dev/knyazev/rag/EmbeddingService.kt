@@ -25,6 +25,7 @@ class EmbeddingService(private val openAiClient: OpenAiClient) {
                 sectionTitle = chunk.sectionTitle,
                 breadcrumb = chunk.breadcrumb,
                 vector = vector,
+                blocks = chunk.blocks,
             )
         }
     }

@@ -16,12 +16,28 @@ import kotlinx.serialization.json.*
 private val logger = KotlinLogging.logger("OpenRouterClient")
 
 /**
- * Сигнал, что модель упала *до* первого эмитнутого токена — можно безопасно
+ * Сигнал, что модель упала *до* первого эмитнутого события — можно безопасно
  * попробовать следующую модель из списка fallback'ов. Любая другая ошибка
  * (mid-stream cancel, network drop после эмитов) пробрасывается как есть:
  * fallback в середине ответа дал бы юзеру склейку двух разных ответов.
  */
 private class LlmEarlyFailure(message: String) : RuntimeException(message)
+
+/**
+ * Модели, у которых через OpenRouter доступен tool-calling (ADR-024). Модели вне
+ * списка получают запрос без `tools` — B-часть UI-блоков отключается, C-часть
+ * (блоки из markdown) работает независимо.
+ */
+private val TOOL_CAPABLE_MODELS = setOf(
+    "anthropic/claude-opus-4-7",
+    "anthropic/claude-sonnet-4-6",
+    "anthropic/claude-3-7-sonnet",
+    "anthropic/claude-3-5-sonnet",
+    "openai/gpt-4o",
+    "openai/gpt-4o-mini",
+    "openai/gpt-4.1",
+    "openai/gpt-4.1-mini",
+)
 
 class OpenRouterClient(
     private val apiKey: String,
@@ -43,11 +59,16 @@ class OpenRouterClient(
     }
 
     /**
-     * Стримит ответ LLM, пробуя модели по очереди: primary (`model`), затем
-     * `fallbackModels`. Переключение возможно только пока ни один токен
-     * ещё не эмитнут — это сохраняет инвариант «юзер видит один связный ответ».
+     * Стримит ответ LLM: токены текста + вызовы инструментов (ADR-024). Пробует модели по
+     * очереди: primary (`model`), затем `fallbackModels`. Переключение возможно только пока
+     * ни одного события ещё не эмитнуто — это сохраняет инвариант «юзер видит один связный
+     * ответ» (ADR-023). Если модель не поддерживает tools — `tools` не передаются, B-блоки
+     * от неё не приходят, но токены и C-блоки работают.
      */
-    fun streamChat(messages: List<ChatMessage>): Flow<String> = flow {
+    fun streamChat(
+        messages: List<ChatMessage>,
+        tools: List<ToolDefinition> = emptyList(),
+    ): Flow<ChatEvent> = flow {
         val models = buildList {
             add(model)
             addAll(fallbackModels)
@@ -55,7 +76,7 @@ class OpenRouterClient(
         val errors = mutableListOf<String>()
         for ((idx, modelName) in models.withIndex()) {
             try {
-                streamFromModel(modelName, messages)
+                streamFromModel(modelName, messages, tools)
                 return@flow
             } catch (e: LlmEarlyFailure) {
                 val attempt = idx + 1
@@ -66,10 +87,19 @@ class OpenRouterClient(
         error("All LLM models failed. ${errors.joinToString(" | ")}")
     }
 
-    private suspend fun FlowCollector<String>.streamFromModel(
+    private class ToolCallAccumulator(
+        var id: String? = null,
+        var name: String? = null,
+        val argsBuilder: StringBuilder = StringBuilder(),
+    )
+
+    private suspend fun FlowCollector<ChatEvent>.streamFromModel(
         modelName: String,
         messages: List<ChatMessage>,
+        tools: List<ToolDefinition>,
     ) {
+        val useTools = tools.isNotEmpty() && modelName in TOOL_CAPABLE_MODELS
+
         val requestBody = buildJsonObject {
             put("model", modelName)
             put("stream", true)
@@ -80,6 +110,21 @@ class OpenRouterClient(
                         put("content", msg.content)
                     }
                 }
+            }
+            if (useTools) {
+                putJsonArray("tools") {
+                    tools.forEach { tool ->
+                        addJsonObject {
+                            put("type", "function")
+                            putJsonObject("function") {
+                                put("name", tool.name)
+                                put("description", tool.description)
+                                put("parameters", tool.parametersSchema)
+                            }
+                        }
+                    }
+                }
+                put("tool_choice", "auto")
             }
         }
 
@@ -95,6 +140,8 @@ class OpenRouterClient(
             val channel: ByteReadChannel = response.bodyAsChannel()
             var emitted = 0
             var firstUnparsed: String? = null
+            val toolAccumulators = mutableMapOf<Int, ToolCallAccumulator>()
+
             while (!channel.isClosedForRead) {
                 val line = channel.readLine() ?: break
                 if (!line.startsWith("data: ")) continue
@@ -102,25 +149,53 @@ class OpenRouterClient(
                 if (data == "[DONE]") break
                 // Пропускаем keep-alive комментарии OpenRouter вида ": OPENROUTER PROCESSING"
                 if (data.startsWith(":")) continue
-                val token = extractToken(data)
-                if (token != null) {
-                    emit(token)
-                    emitted++
-                } else if (firstUnparsed == null) {
-                    firstUnparsed = data.take(300)
+
+                val parsed = runCatching { json.parseToJsonElement(data).jsonObject }.getOrNull()
+                if (parsed == null) {
+                    if (firstUnparsed == null) firstUnparsed = data.take(300)
+                    continue
+                }
+                val choice = parsed["choices"]?.jsonArray?.firstOrNull()?.jsonObject ?: continue
+                val delta = choice["delta"]?.jsonObject
+
+                if (delta != null) {
+                    delta["content"]?.jsonPrimitive?.contentOrNull?.let { content ->
+                        emit(ChatEvent.Token(content))
+                        emitted++
+                    }
+                    delta["tool_calls"]?.jsonArray?.forEach { tcElem ->
+                        val tc = tcElem.jsonObject
+                        val index = tc["index"]?.jsonPrimitive?.intOrNull ?: 0
+                        val acc = toolAccumulators.getOrPut(index) { ToolCallAccumulator() }
+                        tc["id"]?.jsonPrimitive?.contentOrNull?.let { acc.id = it }
+                        tc["function"]?.jsonObject?.let { fn ->
+                            fn["name"]?.jsonPrimitive?.contentOrNull?.let { acc.name = it }
+                            fn["arguments"]?.jsonPrimitive?.contentOrNull?.let { acc.argsBuilder.append(it) }
+                        }
+                    }
+                }
+
+                val finishReason = choice["finish_reason"]?.jsonPrimitive?.contentOrNull
+                if (finishReason == "tool_calls" || (finishReason != null && toolAccumulators.isNotEmpty())) {
+                    for ((_, acc) in toolAccumulators) {
+                        val name = acc.name ?: continue
+                        emit(ChatEvent.ToolCall(id = acc.id ?: "", name = name, arguments = acc.argsBuilder.toString()))
+                        emitted++
+                    }
+                    toolAccumulators.clear()
                 }
             }
+
             if (emitted == 0) {
-                // Ответ 2xx, но ни одного content-токена — fallback-able: бросаем
-                // LlmEarlyFailure, ни один emit ещё не прошёл, можно пробовать
-                // следующую модель в списке.
+                // Ответ 2xx, но ни одного события — fallback-able: бросаем LlmEarlyFailure,
+                // ни один emit ещё не прошёл, можно пробовать следующую модель в списке.
                 throw LlmEarlyFailure(
                     "$modelName returned no content tokens " +
                         "(status=${response.status}, " +
                         "firstUnparsed=${firstUnparsed ?: "<no data lines>"})"
                 )
             }
-            logger.debug { "streamChat emitted $emitted tokens from $modelName" }
+            logger.debug { "streamChat emitted $emitted events from $modelName (tools=$useTools)" }
         }
     }
 
@@ -156,19 +231,6 @@ class OpenRouterClient(
                 .trim()
         }.getOrDefault("")
     }
-
-    private fun extractToken(data: String): String? = runCatching {
-        val obj = json.parseToJsonElement(data).jsonObject
-        obj["choices"]
-            ?.jsonArray
-            ?.firstOrNull()
-            ?.jsonObject
-            ?.get("delta")
-            ?.jsonObject
-            ?.get("content")
-            ?.jsonPrimitive
-            ?.contentOrNull
-    }.getOrNull()
 }
 
 @Serializable

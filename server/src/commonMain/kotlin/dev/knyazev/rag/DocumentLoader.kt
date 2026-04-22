@@ -1,5 +1,6 @@
 package dev.knyazev.rag
 
+import dev.knyazev.ui.UiBlock
 import okio.FileSystem
 import okio.Path
 import okio.Path.Companion.toPath
@@ -13,6 +14,12 @@ data class DocumentChunk(
     val breadcrumb: String,
     /** Absolute path to the source file this chunk was derived from — used for per-file cache invalidation. */
     val sourceFile: String,
+    /**
+     * UI-блоки, извлечённые из markdown-тела (ADR-024, механизм C).
+     * Эмитируются фронту через SSE при ретривале чанка. Content остаётся оригиналом —
+     * очистка под LLM-контекст происходит на лету в RagPipeline.
+     */
+    val blocks: List<UiBlock> = emptyList(),
 )
 
 object DocumentLoader {
@@ -78,7 +85,8 @@ object DocumentLoader {
         val content = lines.joinToString("\n").trim()
         if (content.isNotBlank()) {
             val breadcrumb = buildBreadcrumb(filePath, documentTitle, sectionTitle)
-            chunks.add(DocumentChunk(filePath, sectionTitle, content, breadcrumb, sourceFile))
+            val blocks = BlockExtractor.extract(content, filePath).blocks
+            chunks.add(DocumentChunk(filePath, sectionTitle, content, breadcrumb, sourceFile, blocks))
         }
         lines.clear()
     }

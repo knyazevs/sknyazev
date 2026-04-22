@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   REPO_ROOT,
+  DOCS_ROOT,
   buildTree,
   buildCodeTree,
   buildCommits,
@@ -17,6 +18,7 @@ import {
 
 const DATA_ROOT = path.join(REPO_ROOT, 'app', 'public', 'data');
 const CONTENT_ROOT = path.join(DATA_ROOT, 'content');
+const IMAGES_ROOT = path.join(REPO_ROOT, 'app', 'public', 'images');
 const COMMITS_LIMIT = 200;
 
 function ensureDir(dir: string) {
@@ -41,6 +43,68 @@ function resetDataDir() {
   ensureDir(DATA_ROOT);
 }
 
+function resetImagesDir() {
+  if (fs.existsSync(IMAGES_ROOT)) {
+    fs.rmSync(IMAGES_ROOT, { recursive: true, force: true });
+  }
+  ensureDir(IMAGES_ROOT);
+}
+
+// ADR-024: относительные пути в markdown-изображениях переписываются на абсолютные
+// /images/{docDir}/{file}; сами файлы копируются в app/public/images/ для отдачи статикой.
+// Тот же алгоритм применяется на бэкенде в BlockExtractor.resolveUrl — пути в UI-блоках
+// согласованы с копиями, лежащими под public/.
+// Fenced code-блоки пропускаются: markdown-примеры внутри ``` не считаются за реальные картинки.
+const IMAGE_REGEX = /!\[([^\]]*)\]\(([^)\s]+)\)/g;
+
+function processMarkdownImages(docRelPath: string, markdown: string): string {
+  // Пути из buildTree() начинаются с `docs/` — снимаем префикс, чтобы URL и target-папка
+  // не содержали лишнего `docs/` (напр. profile/profile.png → /images/profile/profile.png).
+  const relFromDocs = docRelPath.startsWith('docs/') ? docRelPath.slice('docs/'.length) : docRelPath;
+  const docDir = path.dirname(relFromDocs);
+  const docDirClean = docDir === '.' ? '' : docDir;
+
+  const lines = markdown.split('\n');
+  let inFence = false;
+  return lines
+    .map((line) => {
+      if (/^\s*```/.test(line)) {
+        inFence = !inFence;
+        return line;
+      }
+      if (inFence) return line;
+      return line.replace(IMAGE_REGEX, (match, alt: string, url: string, offset: number) => {
+        // Пропускаем match, если он внутри inline code (нечётное число backticks до него).
+        const before = line.slice(0, offset);
+        const backticksBefore = (before.match(/`/g) ?? []).length;
+        if (backticksBefore % 2 === 1) return match;
+        if (
+          url.startsWith('http://') ||
+          url.startsWith('https://') ||
+          url.startsWith('#') ||
+          url.startsWith('/')
+        ) {
+          return match;
+        }
+        const resolvedRel = path
+          .normalize(docDirClean === '' ? url : path.join(docDirClean, url))
+          .replace(/\\/g, '/');
+        const srcAbs = path.join(DOCS_ROOT, resolvedRel);
+        if (!fs.existsSync(srcAbs)) {
+          console.warn(
+            `[static-data] картинка не найдена: ${path.relative(REPO_ROOT, srcAbs)} (в ${docRelPath})`,
+          );
+          return match;
+        }
+        const dstAbs = path.join(IMAGES_ROOT, resolvedRel);
+        ensureDir(path.dirname(dstAbs));
+        fs.copyFileSync(srcAbs, dstAbs);
+        return `![${alt}](/images/${resolvedRel})`;
+      });
+    })
+    .join('\n');
+}
+
 function collectAllDocPaths(): string[] {
   const paths: string[] = [];
   for (const section of buildTree()) {
@@ -53,6 +117,8 @@ function collectAllDocPaths(): string[] {
 function main() {
   console.log('[static-data] очищаю', path.relative(REPO_ROOT, DATA_ROOT));
   resetDataDir();
+  console.log('[static-data] очищаю', path.relative(REPO_ROOT, IMAGES_ROOT));
+  resetImagesDir();
 
   console.log('[static-data] docs-tree.json');
   const tree = buildTree();
@@ -74,7 +140,8 @@ function main() {
       console.warn(`[static-data] пропуск: не найден ${p}`);
       continue;
     }
-    writeContentFile(p, content);
+    const processedContent = processMarkdownImages(p, content);
+    writeContentFile(p, processedContent);
   }
 
   const codePaths = collectAllCodePaths();

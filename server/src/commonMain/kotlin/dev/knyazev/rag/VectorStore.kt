@@ -1,5 +1,6 @@
 package dev.knyazev.rag
 
+import dev.knyazev.ui.UiBlock
 import kotlin.math.sqrt
 
 data class VectorEntry(
@@ -9,6 +10,8 @@ data class VectorEntry(
     val sectionTitle: String,
     val breadcrumb: String,
     val vector: FloatArray,
+    /** UI-блоки чанка (ADR-024) — эмитятся через SSE после ретривала. */
+    val blocks: List<UiBlock> = emptyList(),
 ) {
     override fun equals(other: Any?) = other is VectorEntry && id == other.id
     override fun hashCode() = id.hashCode()

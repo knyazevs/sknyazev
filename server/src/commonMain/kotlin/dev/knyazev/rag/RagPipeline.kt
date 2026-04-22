@@ -1,7 +1,10 @@
 package dev.knyazev.rag
 
+import dev.knyazev.llm.ChatEvent
 import dev.knyazev.llm.ChatMessage
 import dev.knyazev.llm.OpenRouterClient
+import dev.knyazev.ui.UiBlock
+import dev.knyazev.ui.UiTools
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
@@ -16,7 +19,9 @@ private val logger = KotlinLogging.logger {}
 data class RagResult(
     /** Unique filePaths of retrieved chunks — emitted to client as source references. */
     val sources: List<String>,
-    val stream: Flow<String>,
+    /** UI-блоки, извлечённые из markdown финальных чанков (ADR-024, механизм C). */
+    val blocks: List<UiBlock>,
+    val stream: Flow<ChatEvent>,
 )
 
 private const val DENSE_CANDIDATE_POOL = 20
@@ -25,6 +30,9 @@ private const val RRF_K = 60
 /** Post-RRF cosine filter (ADR-19). Chunks with cos(query, chunk) below this are dropped. */
 private const val FINAL_COSINE_THRESHOLD = 0.35f
 private const val FINAL_TOP_K = 5
+
+/** Максимум UI-блоков на ответ (ADR-024). Считается суммарно C + B. */
+private const val BLOCKS_HARD_CAP = 5
 
 private val SYSTEM_PROMPT = """
 Ты — интерпретационный слой персонального профиля Сергея Князева.
@@ -48,6 +56,19 @@ private val SYSTEM_PROMPT = """
 Затем поставь маркер ---DETAIL--- на отдельной строке.
 После маркера дай развёрнутый ответ с деталями, примерами и ссылками на источники.
 Краткий ответ должен быть самодостаточным — читатель может не открывать подробности.
+
+Визуальные блоки (инструменты):
+Для наглядности используй render_image / render_image_gallery / render_link_list / render_text_with_image,
+когда уместно показать картинку, список ссылок или визитку (фото + краткий текст).
+
+Когда какой блок:
+- «кто ты?», «расскажи о себе», «кратко о авторе» → render_text_with_image (фото + 2-4 предложения в markdown).
+- Просят показать репозитории / демо / соцсети → render_link_list.
+- Несколько скриншотов проекта → render_image_gallery.
+- Одна иллюстрация без текста-пары → render_image.
+
+Если вызвал инструмент — НЕ дублируй этот ресурс в тексте ответа (ни markdown-картинкой, ни markdown-ссылкой).
+Всего блоков (включая те, что появляются автоматически из документации) — не больше 5.
 """.trimIndent()
 
 private val NO_CONTEXT_PROMPT = """
@@ -105,9 +126,19 @@ class RagPipeline(
         // Step 4: Collect unique source paths (ordered — indices match [1], [2], … in prompt)
         val sources = finalChunks.map { it.entry.filePath }.distinct()
 
+        // Step 4b: Aggregate UI blocks (ADR-024, mechanism C).
+        // Блоки чанков склеиваются, дедуплицируются по паре (type, первое-поле), обрезаются до cap.
+        val aggregatedBlocks = finalChunks
+            .flatMap { it.entry.blocks }
+            .distinct()
+            .take(BLOCKS_HARD_CAP)
+
         // Step 5: Build prompt with numbered sources and stream LLM response.
         // Current date is injected so the model can compute relative facts (age, tenure)
         // against today rather than its training cutoff.
+        // Контент чанка передаётся как есть — включая markdown-картинки и ссылки. Это даёт LLM
+        // URL ресурсов, чтобы она могла подставить их в render_* инструменты. От дублей защищает
+        // system prompt («не копируй ресурс в текст») и санитайзер на фронте.
         val today = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault()).date
         val messages = if (finalChunks.isEmpty()) {
             listOf(
@@ -117,7 +148,8 @@ class RagPipeline(
         } else {
             val context = finalChunks.mapIndexed { idx, scored ->
                 val sourceIdx = sources.indexOf(scored.entry.filePath) + 1
-                "[$sourceIdx] Источник: ${scored.entry.breadcrumb}\n\n${scored.entry.content}"
+                val contentWithAbsPaths = BlockExtractor.rewriteImagePaths(scored.entry.content, scored.entry.filePath)
+                "[$sourceIdx] Источник: ${scored.entry.breadcrumb}\n\n$contentWithAbsPaths"
             }.joinToString("\n\n---\n\n")
             listOf(
                 ChatMessage("system", "$SYSTEM_PROMPT\n\nТекущая дата: $today."),
@@ -125,7 +157,11 @@ class RagPipeline(
             )
         }
 
-        RagResult(sources = sources, stream = openRouterClient.streamChat(messages))
+        RagResult(
+            sources = sources,
+            blocks = aggregatedBlocks,
+            stream = openRouterClient.streamChat(messages, tools = UiTools.definitions),
+        )
     }
 
     private fun cosineSimilarity(query: FloatArray, queryNorm: Float, doc: FloatArray): Float {

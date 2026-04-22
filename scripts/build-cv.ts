@@ -21,6 +21,7 @@ interface Profile {
   location: string;
   photo?: string;
   contacts: {
+    site?: string;
     github?: string;
     linkedin?: string;
     telegram?: string;
@@ -222,21 +223,32 @@ const SKILL_TAGS: Record<string, string[]> = {
 
 // ─── HTML rendering ───────────────────────────────────────────────────────────
 
+const ICONS: Record<string, string> = {
+  phone: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.37 1.9.72 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.35 1.85.59 2.81.72A2 2 0 0 1 22 16.92z"/></svg>`,
+  email: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>`,
+  site: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>`,
+  telegram: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M9.78 18.65l.28-4.23 7.68-6.92c.34-.31-.07-.46-.52-.19L7.74 13.3 3.64 12c-.88-.25-.89-.86.2-1.3l15.97-6.16c.73-.33 1.43.18 1.15 1.3l-2.72 12.81c-.19.91-.74 1.13-1.5.71L12.6 16.3l-1.99 1.93c-.23.23-.42.42-.83.42z"/></svg>`,
+  linkedin: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M20.45 20.45h-3.55v-5.57c0-1.33-.02-3.04-1.85-3.04-1.86 0-2.14 1.45-2.14 2.95v5.66H9.36V9h3.41v1.56h.05c.48-.9 1.64-1.85 3.37-1.85 3.6 0 4.27 2.37 4.27 5.46v6.28zM5.34 7.43a2.06 2.06 0 1 1 0-4.13 2.06 2.06 0 0 1 0 4.13zm1.78 13.02H3.56V9h3.56v11.45zM22.22 0H1.77C.79 0 0 .77 0 1.72v20.56C0 23.23.79 24 1.77 24h20.45c.98 0 1.78-.77 1.78-1.72V1.72C24 .77 23.2 0 22.22 0z"/></svg>`,
+  github: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .3a12 12 0 0 0-3.79 23.4c.6.1.82-.26.82-.57v-2.17c-3.34.72-4.04-1.61-4.04-1.61-.55-1.39-1.33-1.76-1.33-1.76-1.09-.74.08-.73.08-.73 1.2.09 1.84 1.24 1.84 1.24 1.07 1.83 2.81 1.3 3.49.99.1-.78.42-1.3.76-1.6-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.14-.3-.54-1.52.1-3.18 0 0 1.01-.32 3.31 1.23a11.5 11.5 0 0 1 6.02 0c2.3-1.55 3.3-1.23 3.3-1.23.66 1.66.26 2.88.13 3.18a4.65 4.65 0 0 1 1.23 3.22c0 4.61-2.8 5.63-5.48 5.92.43.37.81 1.1.81 2.22v3.29c0 .32.22.69.83.57A12 12 0 0 0 12 .3"/></svg>`,
+};
+
 function renderContacts(contacts: Profile["contacts"]): string {
   const items: string[] = [];
   if (contacts.phone)
-    items.push(esc(contacts.phone));
+    items.push(`${ICONS.phone}<span>${esc(contacts.phone)}</span>`);
   if (contacts.email)
-    items.push(`<a href="mailto:${contacts.email}">${esc(contacts.email)}</a>`);
+    items.push(`${ICONS.email}<a href="mailto:${contacts.email}">${esc(contacts.email)}</a>`);
+  if (contacts.site) {
+    const clean = contacts.site.replace(/^https?:\/\//, "");
+    items.push(`${ICONS.site}<a href="https://${clean}">${esc(clean)}</a>`);
+  }
   if (contacts.telegram)
-    items.push(`<a href="https://t.me/${contacts.telegram.replace("@", "")}">${esc(contacts.telegram)}</a>`);
+    items.push(`${ICONS.telegram}<a href="https://t.me/${contacts.telegram.replace("@", "")}">${esc(contacts.telegram)}</a>`);
   if (contacts.linkedin)
-    items.push(`<a href="https://linkedin.com/in/${contacts.linkedin}">linkedin.com/in/${esc(contacts.linkedin)}</a>`);
+    items.push(`${ICONS.linkedin}<a href="https://linkedin.com/in/${contacts.linkedin}">linkedin.com/in/${esc(contacts.linkedin)}</a>`);
   if (contacts.github)
-    items.push(`<a href="https://github.com/${contacts.github}">github.com/${esc(contacts.github)}</a>`);
-  return items
-    .map((i) => `<span class="ci">${i}</span>`)
-    .join('<span class="csep"> · </span>');
+    items.push(`${ICONS.github}<a href="https://github.com/${contacts.github}">github.com/${esc(contacts.github)}</a>`);
+  return items.map((i) => `<span class="ci">${i}</span>`).join("");
 }
 
 function renderExperience(experiences: Experience[]): string {
@@ -276,7 +288,7 @@ function renderSkills(skills: Skill[]): string {
 }
 
 function renderEducation(edu: Education): string {
-  const degrees = edu.degrees
+  return edu.degrees
     .map(
       (d) => `
       <div class="edu-entry">
@@ -285,14 +297,14 @@ function renderEducation(edu: Education): string {
       </div>`,
     )
     .join("");
+}
 
-  const langs = edu.languages
+function renderLanguages(edu: Education): string {
+  return edu.languages
     .map(
       (l) => `<div class="lang"><span>${l.name}</span><span class="lang-lvl">${l.level}</span></div>`,
     )
     .join("");
-
-  return degrees + `<div class="lang-block">${langs}</div>`;
 }
 
 // ─── Full HTML ────────────────────────────────────────────────────────────────
@@ -350,19 +362,23 @@ function buildHtml(
   * { box-sizing: border-box; margin: 0; padding: 0; }
   a { color: inherit; text-decoration: none; }
 
-  /* ── Tokens (white + warm brand accents) ── */
+  /* ── Tokens (slate + gold accents) ── */
   :root {
     --bg:         #FFFFFF;
-    --surface:    #FBF5E8;
-    --border:     #E8D8B8;
-    --text:       #3A2415;
-    --heading:    #1A0E07;
-    --sub:        #5C3E25;
-    --muted:      #8C6040;
-    --dim:        #A87A50;
-    --accent:     #B85A08;
-    --accent-bg:  rgba(184, 90, 8, 0.08);
-    --accent-bd:  rgba(184, 90, 8, 0.30);
+    --surface:    #F8FAFC;   /* Серый 50 */
+    --surface-2:  #F1F5F9;   /* Серый 100 */
+    --border:     #E2E8F0;   /* Серый 200 */
+    --text:       #334155;   /* Серый 700 */
+    --heading:    #0F172A;   /* Тёмно-синий */
+    --sub:        #334155;   /* Серый-синий */
+    --muted:      #94A3B8;   /* Серый 400 */
+    --dim:        #94A3B8;
+    --accent:     #D49934;   /* Золотой */
+    --accent-bg:  rgba(212, 153, 52, 0.10);
+    --accent-bd:  rgba(212, 153, 52, 0.35);
+    --link:       #3B82F6;   /* Синий */
+    --warn:       #F97316;   /* Оранжевый */
+    --ok:         #22C55E;   /* Зелёный */
   }
 
   /* ── Page ── */
@@ -374,10 +390,10 @@ function buildHtml(
     background: var(--bg);
   }
 
-  /* ─────────────────────────── HEADER (warm dark on light body) ─── */
+  /* ─────────────────────────── HEADER (slate gradient on light body) ─── */
   .hd {
-    background: #1A0E07;
-    color: #E0CBAA;
+    background: linear-gradient(135deg, #0F172A, #1E293B);
+    color: #FFFFFF;
     padding: 18px 20px 16px;
     display: flex;
     align-items: center;
@@ -385,17 +401,15 @@ function buildHtml(
   }
 
   .photo {
-    width: 78px; height: 78px;
-    border-radius: 50%;
+    width: 112px; height: 112px;
+    border-radius: 6px;
     object-fit: cover;
-    border: 2.5px solid rgba(212, 114, 10, 0.45);
     flex-shrink: 0;
   }
   .photo-placeholder {
-    width: 78px; height: 78px;
-    border-radius: 50%;
+    width: 112px; height: 112px;
+    border-radius: 6px;
     background: rgba(255,255,255,0.07);
-    border: 2px dashed rgba(255,255,255,0.18);
     flex-shrink: 0;
   }
 
@@ -404,30 +418,34 @@ function buildHtml(
     font-size: 21pt; font-weight: 700;
     letter-spacing: -0.4px; line-height: 1.1;
     margin-bottom: 2px;
-    color: #F5DDBA;
+    color: #FFFFFF;
   }
   .hd-info .job-title {
     font-size: 10.5pt;
-    color: #D4720A;
+    color: #D49934;
     margin-bottom: 7px;
   }
   .hd-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
   .hd-chip {
-    background: rgba(212, 114, 10, 0.14);
-    border: 1px solid rgba(212, 114, 10, 0.45);
-    color: #F5DDBA;
+    background: transparent;
+    border: 1px solid rgba(212, 153, 52, 0.55);
+    color: #FFFFFF;
     font-size: 7.5pt; font-weight: 600;
-    padding: 2px 8px; border-radius: 999px;
+    padding: 2px 8px; border-radius: 4px;
     white-space: nowrap;
   }
-  .contacts { display: flex; flex-wrap: wrap; gap: 3px 10px; font-size: 8.5pt; }
-  .ci { color: #C4A884; }
-  .ci a { color: #C4A884; }
-  .csep { color: rgba(255,255,255,0.22); }
+  .contacts { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 8.5pt; }
+  .ci { color: #CBD5E1; display: inline-flex; align-items: center; gap: 4px; }
+  .ci a { color: #CBD5E1; }
+  .ci svg {
+    width: 10px; height: 10px;
+    color: #D49934;
+    flex-shrink: 0;
+  }
 
   .hd-meta {
     text-align: right;
-    font-size: 9pt; color: #A87A50;
+    font-size: 9pt; color: #94A3B8;
     white-space: nowrap; line-height: 1.7;
     align-self: flex-start;
     padding-top: 2px;
@@ -474,17 +492,28 @@ function buildHtml(
 
   /* ─── Experience ─── */
   .exp {
-    margin-bottom: 6px; padding-bottom: 6px;
+    margin-bottom: 0; padding-bottom: 12px;
     border-bottom: 1px solid var(--border);
     padding-left: 11px; position: relative;
   }
-  .exp:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+  .exp:last-of-type { border-bottom: none; padding-bottom: 0; }
   .exp::before {
     content: '';
     position: absolute; left: 0; top: 6px;
     width: 5px; height: 5px;
     border-radius: 50%; background: var(--muted);
+    z-index: 1;
   }
+  .exp::after {
+    content: '';
+    position: absolute;
+    left: 2px; top: 0; bottom: 0;
+    width: 1px; background: var(--border);
+    z-index: 0;
+  }
+  .exp:first-of-type::after { top: 8.5px; }
+  .exp:last-of-type::after { bottom: calc(100% - 8.5px); }
+  .exp:only-of-type::after { display: none; }
 
   .exp-current::before {
     background: var(--accent) !important;
@@ -499,7 +528,7 @@ function buildHtml(
   .exp-role { color: var(--muted); font-size: 9.5pt; margin-top: 1px; }
   .exp-right { display: flex; align-items: baseline; gap: 5px; flex-shrink: 0; }
   .exp-now {
-    background: var(--accent); color: var(--bg);
+    background: var(--warn); color: var(--bg);
     font-size: 6.8pt; font-weight: 700;
     padding: 1px 6px; border-radius: 3px;
     text-transform: uppercase; letter-spacing: 0.5px;
@@ -507,8 +536,7 @@ function buildHtml(
   }
   .exp-period {
     color: var(--muted); font-size: 8.5pt; white-space: nowrap; flex-shrink: 0;
-    background: var(--surface); padding: 1px 6px; border-radius: 4px; font-weight: 500;
-    border: 1px solid var(--border);
+    font-weight: 500;
   }
   .exp-desc { color: var(--sub); font-size: 9.5pt; line-height: 1.38; margin-top: 2px; }
 
@@ -528,7 +556,6 @@ function buildHtml(
   .edu-school { font-size: 8pt; color: var(--muted); display: block; }
 
   /* ─── Sidebar: Languages ─── */
-  .lang-block { margin-top: 7px; border-top: 1px solid var(--border); padding-top: 6px; }
   .lang { display: flex; justify-content: space-between; font-size: 8.5pt; margin-bottom: 2px; }
   .lang-lvl { color: var(--muted); }
 
@@ -584,8 +611,13 @@ function buildHtml(
       </div>
 
       <div class="section">
-        <div class="sec-title">Образование · Языки</div>
+        <div class="sec-title">Образование</div>
         ${renderEducation(education)}
+      </div>
+
+      <div class="section">
+        <div class="sec-title">Языки</div>
+        ${renderLanguages(education)}
       </div>
 
       <div class="section">

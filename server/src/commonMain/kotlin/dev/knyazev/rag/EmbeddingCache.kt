@@ -1,5 +1,6 @@
 package dev.knyazev.rag
 
+import dev.knyazev.ui.UiBlock
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -20,6 +21,12 @@ private data class CachedEntry(
     val sectionTitle: String,
     val breadcrumb: String,
     val vector: List<Float>,
+    /**
+     * UI-блоки чанка (ADR-024). Default = пустой список для backward-compat:
+     * кэши, записанные до внедрения блоков, читаются без ошибки;
+     * при следующем изменении исходного файла пересчитаются с блоками.
+     */
+    val blocks: List<UiBlock> = emptyList(),
 )
 
 @Serializable
@@ -159,6 +166,7 @@ object EmbeddingCache {
         sectionTitle = sectionTitle,
         breadcrumb = breadcrumb,
         vector = FloatArray(vector.size) { i -> vector[i] },
+        blocks = blocks,
     )
 
     private fun VectorEntry.toCachedEntry() = CachedEntry(
@@ -168,5 +176,6 @@ object EmbeddingCache {
         sectionTitle = sectionTitle,
         breadcrumb = breadcrumb,
         vector = vector.toList(),
+        blocks = blocks,
     )
 }
