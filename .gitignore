@@ -6,6 +6,8 @@ dist/
 app/public/cv.pdf
 # статические данные для прод-фронта — генерируются `bun run build:data`
 app/public/data/
+# карта корпуса для agentic-режима — регенерируется `bun run build:corpus-map`
+docs/.corpus-map.md
 
 # dependencies
 node_modules/

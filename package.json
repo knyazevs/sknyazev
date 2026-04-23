@@ -8,8 +8,9 @@
     "dev:app": "cd app && bun run dev",
     "build:cv": "node --experimental-strip-types scripts/build-cv.ts",
     "build:data": "node --experimental-strip-types scripts/build-static-data.ts",
+    "build:corpus-map": "node --experimental-strip-types scripts/generate-corpus-map.ts",
     "build:app": "cd app && bun run build",
-    "build": "bun run build:cv && bun run build:data && bun run build:app"
+    "build": "bun run build:cv && bun run build:data && bun run build:corpus-map && bun run build:app"
   },
   "devDependencies": {
     "concurrently": "^9.2.1",

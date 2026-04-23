@@ -1,13 +1,13 @@
 package dev.knyazev.plugins
 
-import dev.knyazev.api.asrRoutes
+import dev.knyazev.agent.AgentMode
+import dev.knyazev.agent.AgenticPipeline
+import dev.knyazev.agent.FullContextPipeline
 import dev.knyazev.api.autocompleteRoutes
 import dev.knyazev.api.chatRoutes
 import dev.knyazev.api.sessionRoutes
 import dev.knyazev.api.suggestionsRoutes
-import dev.knyazev.api.ttsRoutes
 import dev.knyazev.guard.QuestionRouter
-import dev.knyazev.llm.OpenAiClient
 import dev.knyazev.llm.OpenRouterClient
 import dev.knyazev.rag.RagPipeline
 import dev.knyazev.rag.Skill
@@ -21,7 +21,9 @@ import kotlinx.serialization.json.put
 
 fun Application.configureRouting(
     ragPipeline: RagPipeline,
-    openAiClient: OpenAiClient,
+    agenticPipeline: AgenticPipeline,
+    fullContextPipeline: FullContextPipeline,
+    defaultMode: AgentMode,
     openRouterClient: OpenRouterClient,
     questionRouter: QuestionRouter,
     skillExecutor: SkillExecutor,
@@ -44,12 +46,25 @@ fun Application.configureRouting(
             suggestionsRoutes(suggestionsService)
             autocompleteRoutes(openRouterClient)
             rateLimit(CHAT_RATE_LIMIT) {
-                chatRoutes(ragPipeline, questionRouter, skillExecutor, skills, suggestionsService)
+                chatRoutes(
+                    ragPipeline,
+                    agenticPipeline,
+                    fullContextPipeline,
+                    defaultMode,
+                    questionRouter,
+                    skillExecutor,
+                    skills,
+                    suggestionsService,
+                )
             }
-            rateLimit(MEDIA_RATE_LIMIT) {
-                ttsRoutes(openAiClient)
-                asrRoutes(openAiClient)
-            }
+            // ADR-028: TTS/ASR-роуты временно отключены — OpenRouter не предоставляет
+            // tts-1/whisper-1, а от прямого OPENAI_API_KEY отказались. Код (TtsRoutes,
+            // AsrRoutes, OpenAiClient.textToSpeech/speechToText) остаётся в репо,
+            // чтобы включить обратно, когда появится альтернативный провайдер.
+            // rateLimit(MEDIA_RATE_LIMIT) {
+            //     ttsRoutes(openAiClient)
+            //     asrRoutes(openAiClient)
+            // }
         }
     }
 }

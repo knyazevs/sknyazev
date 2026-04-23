@@ -146,6 +146,17 @@
         voiceLevel = 0;
     }
 
+    // ─── Agent mode (ADR-027) ───────────────────────────────────────────────
+    const AGENT_MODE_KEY = "agent-mode";
+    type AgentMode = "agentic" | "full_context" | "rag";
+    let agentMode = $state<AgentMode>("agentic");
+
+    function setAgentMode(m: AgentMode) {
+        agentMode = m;
+        try { sessionStorage.setItem(AGENT_MODE_KEY, m); } catch {}
+        pushLog("evt", `agent mode = ${m}`);
+    }
+
     // ─── Easter eggs ────────────────────────────────────────────────────────
     const DEBUG_KEY = "debug-mode";
     let debugMode = $state(false);
@@ -558,6 +569,12 @@
         ttsEnabled = localStorage.getItem("tts") !== "off";
 
         try { debugMode = sessionStorage.getItem(DEBUG_KEY) === "1"; } catch {}
+        try {
+            const savedMode = sessionStorage.getItem(AGENT_MODE_KEY);
+            if (savedMode === "agentic" || savedMode === "full_context" || savedMode === "rag") {
+                agentMode = savedMode;
+            }
+        } catch {}
 
         window.addEventListener("keydown", onGlobalKey);
 
@@ -622,7 +639,7 @@
             const response = await fetch(`${BACKEND_URL}/api/chat`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-                body: JSON.stringify({ question: questionText }),
+                body: JSON.stringify({ question: questionText, mode: agentMode }),
             });
 
             if (!response.ok) {
@@ -1138,6 +1155,28 @@
 <div class="orb-bg" class:chat-mode={chatMode} class:matrix={matrixMode} aria-hidden="true">
     {#if debugMode}
         <DebugLogStream />
+        <!-- Селектор режима агента (ADR-027). Виден только в debug-режиме — обычный посетитель получает agentic по дефолту. -->
+        <div class="agent-mode-switch" aria-label="Режим работы агента">
+            <span class="label">mode:</span>
+            <button
+                type="button"
+                class:active={agentMode === "agentic"}
+                onclick={() => setAgentMode("agentic")}
+                title="Карта корпуса + навигационные тулы. Дёшево, прозрачно."
+            >agentic</button>
+            <button
+                type="button"
+                class:active={agentMode === "full_context"}
+                onclick={() => setAgentMode("full_context")}
+                title="Весь корпус в промпте. Дорого cold, дёшево warm."
+            >full-ctx</button>
+            <button
+                type="button"
+                class:active={agentMode === "rag"}
+                onclick={() => setAgentMode("rag")}
+                title="Legacy: HyDE + BM25 + RRF retrieval."
+            >rag</button>
+        </div>
     {/if}
     <CosmicOrb
         {state}
@@ -1694,6 +1733,51 @@
 />
 
 <style>
+    /* ─── Agent mode switch (debug only, ADR-027) ──────────────────────────── */
+    .agent-mode-switch {
+        position: absolute;
+        top: 12px;
+        right: 12px;
+        z-index: 3;
+        display: flex;
+        gap: 4px;
+        align-items: center;
+        padding: 4px 8px;
+        background: color-mix(in srgb, var(--color-bg) 72%, transparent);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        border: 1px solid color-mix(in srgb, var(--color-accent) 28%, transparent);
+        border-radius: 8px;
+        font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+        font-size: 11px;
+        line-height: 1;
+        pointer-events: auto;
+    }
+    .agent-mode-switch .label {
+        color: color-mix(in srgb, var(--color-accent) 60%, transparent);
+        padding-right: 4px;
+    }
+    .agent-mode-switch button {
+        padding: 4px 8px;
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: 4px;
+        color: color-mix(in srgb, var(--color-accent) 55%, transparent);
+        font-family: inherit;
+        font-size: inherit;
+        cursor: pointer;
+        transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+    }
+    .agent-mode-switch button:hover {
+        color: var(--color-accent);
+        border-color: color-mix(in srgb, var(--color-accent) 35%, transparent);
+    }
+    .agent-mode-switch button.active {
+        background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+        border-color: color-mix(in srgb, var(--color-accent) 55%, transparent);
+        color: var(--color-accent);
+    }
+
     /* ═══════════════════════════════════════════════════════════════════════════ */
     /* ─── Layout ─────────────────────────────────────────────────────────────── */
     /* ═══════════════════════════════════════════════════════════════════════════ */

@@ -6,7 +6,6 @@ import io.ktor.server.config.yaml.YamlConfigLoader
 data class AppConfig(
     val port: Int,
     val openRouterApiKey: String,
-    val openAiApiKey: String,
     val llmModel: String,
     val llmFallbackModels: List<String>,
     val classifierModel: String,
@@ -17,6 +16,7 @@ data class AppConfig(
     val codePath: String,
     val skillsPath: String,
     val cachePath: String,
+    val agentDefaultMode: String,
     val corsAllowedOrigin: String,
     val sessionSecret: String,
 ) {
@@ -39,7 +39,6 @@ data class AppConfig(
             return AppConfig(
                 port = config.property("ktor.deployment.port").getString().toInt(),
                 openRouterApiKey = config.property("app.llm.openRouterApiKey").getString(),
-                openAiApiKey = config.property("app.embedding.openAiApiKey").getString(),
                 llmModel = config.property("app.llm.model").getString(),
                 llmFallbackModels = config.property("app.llm.fallbackModels").getString()
                     .split(",")
@@ -53,6 +52,7 @@ data class AppConfig(
                 codePath = config.property("app.rag.codePath").getString(),
                 skillsPath = config.property("app.rag.skillsPath").getString(),
                 cachePath = config.property("app.rag.cachePath").getString(),
+                agentDefaultMode = config.property("app.agent.defaultMode").getString(),
                 corsAllowedOrigin = config.property("app.cors.allowedOrigin").getString(),
                 sessionSecret = sessionSecret,
             )

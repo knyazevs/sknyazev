@@ -1,8 +1,12 @@
 package dev.knyazev
 
+import dev.knyazev.agent.AgentMode
+import dev.knyazev.agent.AgenticPipeline
+import dev.knyazev.agent.CorpusMap
+import dev.knyazev.agent.FullContextPipeline
+import dev.knyazev.agent.tools.NavigationTools
 import dev.knyazev.config.AppConfig
 import dev.knyazev.guard.QuestionRouter
-import dev.knyazev.llm.OpenAiClient
 import dev.knyazev.llm.OpenRouterClient
 import dev.knyazev.plugins.configureCors
 import dev.knyazev.plugins.configureRateLimit
@@ -43,23 +47,20 @@ fun main() {
 fun runServer() {
     val config = AppConfig.load()
 
-    val openAiClient = OpenAiClient(
-        apiKey = config.openAiApiKey,
-        baseUrl = config.embeddingBaseUrl,
-        embeddingModel = config.embeddingModel,
-    )
     val openRouterClient = OpenRouterClient(
         apiKey = config.openRouterApiKey,
         model = config.llmModel,
         fallbackModels = config.llmFallbackModels,
         classifierModel = config.classifierModel,
+        embeddingModel = config.embeddingModel,
+        embeddingBaseUrl = config.embeddingBaseUrl,
         baseUrl = config.llmBaseUrl,
     )
     if (config.llmFallbackModels.isNotEmpty()) {
         logger.info { "LLM fallback chain: ${config.llmModel} → ${config.llmFallbackModels.joinToString(" → ")}" }
     }
 
-    val embeddingService = EmbeddingService(openAiClient)
+    val embeddingService = EmbeddingService(openRouterClient)
     val vectorStore = InMemoryVectorStore()
     val bm25Index = BM25Index()
     val hydeService = HydeService(openRouterClient)
@@ -103,6 +104,18 @@ fun runServer() {
     val questionRouter = QuestionRouter(openRouterClient, skills)
     val skillExecutor = SkillExecutor(openRouterClient, config.docsPath)
 
+    // ADR-027: агентные режимы. codePath — корень проекта (относительно рабочей дирeктории сервера).
+    val navigator = NavigationTools.Executor(projectRoot = config.codePath)
+    val corpusMap = CorpusMap.load(projectRoot = config.codePath)
+    val agenticPipeline = AgenticPipeline(openRouterClient, navigator, corpusMap)
+    val fullContextPipeline = FullContextPipeline(openRouterClient, projectRoot = config.codePath)
+    val defaultMode = runCatching { AgentMode.parse(config.agentDefaultMode, AgentMode.AGENTIC) }
+        .getOrElse {
+            logger.warn { "Invalid agent.defaultMode '${config.agentDefaultMode}', falling back to AGENTIC" }
+            AgentMode.AGENTIC
+        }
+    logger.info { "Agent default mode: $defaultMode (corpus map: ${corpusMap.chars} chars)" }
+
     val suggestionsService = SuggestionsService(openRouterClient, skills)
     val startupScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     startupScope.launch {
@@ -118,7 +131,9 @@ fun runServer() {
         configureSessionAuth(config.sessionSecret)
         configureRouting(
             ragPipeline,
-            openAiClient,
+            agenticPipeline,
+            fullContextPipeline,
+            defaultMode,
             openRouterClient,
             questionRouter,
             skillExecutor,

@@ -24,6 +24,31 @@ private val logger = KotlinLogging.logger("OpenRouterClient")
 private class LlmEarlyFailure(message: String) : RuntimeException(message)
 
 /**
+ * Сериализует ChatMessage в JSON в формате, который понимает OpenRouter/OpenAI chat completions API.
+ * Для обычных user/assistant/system возвращает `{role, content}`. Для assistant с tool_calls
+ * добавляет массив `tool_calls`. Для tool-role добавляет `tool_call_id`.
+ */
+private fun serializeMessage(msg: ChatMessage): JsonObject = buildJsonObject {
+    put("role", msg.role)
+    put("content", msg.content)
+    msg.toolCalls?.let { calls ->
+        putJsonArray("tool_calls") {
+            calls.forEach { tc ->
+                addJsonObject {
+                    put("id", tc.id)
+                    put("type", "function")
+                    putJsonObject("function") {
+                        put("name", tc.name)
+                        put("arguments", tc.arguments)
+                    }
+                }
+            }
+        }
+    }
+    msg.toolCallId?.let { put("tool_call_id", it) }
+}
+
+/**
  * Модели, у которых через OpenRouter доступен tool-calling (ADR-024). Модели вне
  * списка получают запрос без `tools` — B-часть UI-блоков отключается, C-часть
  * (блоки из markdown) работает независимо.
@@ -44,6 +69,8 @@ class OpenRouterClient(
     private val model: String,
     private val fallbackModels: List<String> = emptyList(),
     private val classifierModel: String = "openai/gpt-4o-mini",
+    private val embeddingModel: String = "openai/text-embedding-3-small",
+    private val embeddingBaseUrl: String? = null,
     private val baseUrl: String = "https://openrouter.ai/api/v1",
 ) {
     /** Exposed for SuggestionsService to use the same cheap model. */
@@ -55,6 +82,42 @@ class OpenRouterClient(
         install(HttpTimeout) {
             requestTimeoutMillis = 60_000
             socketTimeoutMillis = 60_000
+        }
+    }
+
+    /**
+     * Эмбеддинг текста через OpenRouter-прокси к OpenAI-совместимому
+     * `/v1/embeddings` (ADR-028). Формат запроса/ответа совпадает с OpenAI.
+     * `embeddingBaseUrl` позволяет указать другой endpoint (например, свой
+     * прокси), по умолчанию используется тот же `baseUrl`, что и у чата.
+     */
+    suspend fun embedText(text: String): FloatArray {
+        val url = (embeddingBaseUrl ?: baseUrl).trimEnd('/') + "/embeddings"
+        val requestBody = buildJsonObject {
+            put("model", embeddingModel)
+            put("input", text)
+        }
+
+        val response = client.post(url) {
+            header(HttpHeaders.Authorization, "Bearer $apiKey")
+            header(HttpHeaders.ContentType, ContentType.Application.Json)
+            setBody(requestBody.toString())
+        }
+
+        val rawBody = response.bodyAsText()
+        if (!response.status.isSuccess()) {
+            logger.error { "Embedding API error ${response.status}: $rawBody" }
+            error("Embedding API error ${response.status}: $rawBody")
+        }
+        val body = json.parseToJsonElement(rawBody).jsonObject
+        val embeddingArray = body["data"]
+            ?.jsonArray?.getOrNull(0)
+            ?.jsonObject?.get("embedding")
+            ?.jsonArray
+            ?: error("Unexpected embedding response: $rawBody")
+
+        return FloatArray(embeddingArray.size) { i ->
+            embeddingArray[i].jsonPrimitive.float
         }
     }
 
@@ -88,6 +151,66 @@ class OpenRouterClient(
         error("All LLM models failed. ${errors.joinToString(" | ")}")
     }
 
+    /**
+     * Agentic multi-turn цикл (ADR-027). LLM может вызывать `navigationTools` — их исполняет
+     * переданный `navigator`, результаты добавляются в историю сообщений, после чего делается
+     * новый `streamChat`. Так продолжается, пока LLM не перестанет вызывать тулы (финальный
+     * ответ) либо не достигнется `maxIterations`.
+     *
+     * Текстовые токены эмитятся наружу сразу — пользователь видит реалтайм-поток. Навигационные
+     * tool-calls в наружный поток НЕ попадают: они внутренние для пайплайна. UI-тулы (render_*)
+     * в agentic-режиме не используются — итоговый ответ чисто текстовый с цитированием [1], [2].
+     */
+    fun streamAgentic(
+        initialMessages: List<ChatMessage>,
+        navigationTools: List<ToolDefinition>,
+        maxIterations: Int = 8,
+        navigator: suspend (name: String, argsJson: String) -> String,
+    ): Flow<ChatEvent> = flow {
+        val navNames = navigationTools.map { it.name }.toSet()
+        var messages = initialMessages
+        for (iteration in 1..maxIterations) {
+            println("[AGENTIC] iteration=$iteration messages=${messages.size}")
+            val navCalls = mutableListOf<ChatEvent.ToolCall>()
+            val assistantText = StringBuilder()
+
+            streamChat(messages, navigationTools).collect { event ->
+                when (event) {
+                    is ChatEvent.Token -> {
+                        assistantText.append(event.text)
+                        emit(event)
+                    }
+                    is ChatEvent.ToolCall -> {
+                        if (event.name in navNames) {
+                            navCalls.add(event)
+                        } else {
+                            emit(event)
+                        }
+                    }
+                }
+            }
+
+            if (navCalls.isEmpty()) {
+                println("[AGENTIC] iteration=$iteration done (no tool calls, ${assistantText.length} chars of text)")
+                return@flow
+            }
+
+            println("[AGENTIC] iteration=$iteration tool calls: ${navCalls.joinToString(", ") { "${it.name}(${it.arguments.take(60)})" }}")
+            val assistantMsg = ChatMessage(
+                role = "assistant",
+                content = assistantText.toString(),
+                toolCalls = navCalls.map { AssistantToolCall(it.id, it.name, it.arguments) },
+            )
+            val toolResults = navCalls.map { call ->
+                val result = navigator(call.name, call.arguments)
+                println("[AGENTIC]   ← ${call.name}: ${result.length} chars")
+                ChatMessage(role = "tool", content = result, toolCallId = call.id)
+            }
+            messages = messages + assistantMsg + toolResults
+        }
+        println("[AGENTIC] WARN: maxIterations=$maxIterations reached without final answer")
+    }
+
     private class ToolCallAccumulator(
         var id: String? = null,
         var name: String? = null,
@@ -115,12 +238,7 @@ class OpenRouterClient(
             // граница — обычный ответ сильно короче.
             put("max_tokens", 4000)
             putJsonArray("messages") {
-                messages.forEach { msg ->
-                    addJsonObject {
-                        put("role", msg.role)
-                        put("content", msg.content)
-                    }
-                }
+                messages.forEach { msg -> add(serializeMessage(msg)) }
             }
             if (useTools) {
                 putJsonArray("tools") {
@@ -225,12 +343,7 @@ class OpenRouterClient(
             put("stream", false)
             put("max_tokens", maxTokens)
             putJsonArray("messages") {
-                messages.forEach { msg ->
-                    addJsonObject {
-                        put("role", msg.role)
-                        put("content", msg.content)
-                    }
-                }
+                messages.forEach { msg -> add(serializeMessage(msg)) }
             }
         }
 
@@ -259,5 +372,23 @@ class OpenRouterClient(
     }
 }
 
+/**
+ * Сериализуемый tool-call для ассистентских сообщений в агентном multi-turn режиме (ADR-027).
+ * `arguments` — исходная JSON-строка аргументов, которую LLM прислала в дельтах `tool_calls`.
+ */
 @Serializable
-data class ChatMessage(val role: String, val content: String)
+data class AssistantToolCall(val id: String, val name: String, val arguments: String)
+
+/**
+ * Расширенное сообщение чата. Для обычных user/assistant/system используются только
+ * `role` и `content`. В агентном цикле (ADR-027):
+ * - assistant-сообщение с вызовами тулов: `role="assistant"`, `toolCalls` заполнены
+ * - tool-результат: `role="tool"`, `toolCallId` соответствует id ассистентского вызова
+ */
+@Serializable
+data class ChatMessage(
+    val role: String,
+    val content: String,
+    val toolCalls: List<AssistantToolCall>? = null,
+    val toolCallId: String? = null,
+)

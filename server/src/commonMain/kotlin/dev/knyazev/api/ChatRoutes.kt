@@ -1,5 +1,8 @@
 package dev.knyazev.api
 
+import dev.knyazev.agent.AgentMode
+import dev.knyazev.agent.AgenticPipeline
+import dev.knyazev.agent.FullContextPipeline
 import dev.knyazev.guard.QuestionRouter
 import dev.knyazev.guard.RoutingDecision
 import dev.knyazev.llm.ChatEvent
@@ -27,7 +30,7 @@ private val logger = KotlinLogging.logger("ChatRoutes")
 private val blockJson = Json { encodeDefaults = true }
 
 @Serializable
-data class ChatRequest(val question: String)
+data class ChatRequest(val question: String, val mode: String? = null)
 
 /**
  * Сериализует UiBlock вместе с идентификатором для SSE-протокола ADR-025:
@@ -44,6 +47,9 @@ private fun encodeBlockWithId(id: String, block: UiBlock): String {
 
 fun Route.chatRoutes(
     ragPipeline: RagPipeline,
+    agenticPipeline: AgenticPipeline,
+    fullContextPipeline: FullContextPipeline,
+    defaultMode: AgentMode,
     questionRouter: QuestionRouter,
     skillExecutor: SkillExecutor,
     skills: Map<String, Skill>,
@@ -58,7 +64,14 @@ fun Route.chatRoutes(
             return@post
         }
 
-        println("[CHAT] incoming question: \"$question\"")
+        val mode = try {
+            AgentMode.parse(request.mode, defaultMode)
+        } catch (e: IllegalArgumentException) {
+            call.respond(HttpStatusCode.BadRequest, mapOf("error" to (e.message ?: "invalid mode")))
+            return@post
+        }
+
+        println("[CHAT] incoming question: \"$question\" mode=$mode")
         val decision = questionRouter.decide(question)
         println("[CHAT] router decision: $decision")
         if (decision is RoutingDecision.Irrelevant) {
@@ -89,9 +102,19 @@ fun Route.chatRoutes(
                         ?: error("Routing returned skill '${decision.name}' not found in registry")
                     skillExecutor.execute(skill, question)
                 }
-                RoutingDecision.GenericRag -> {
-                    println("[CHAT] → GENERIC RAG path")
-                    ragPipeline.ask(question)
+                RoutingDecision.GenericRag -> when (mode) {
+                    AgentMode.AGENTIC -> {
+                        println("[CHAT] → GENERIC/AGENTIC path")
+                        agenticPipeline.ask(question)
+                    }
+                    AgentMode.FULL_CONTEXT -> {
+                        println("[CHAT] → GENERIC/FULL-CONTEXT path")
+                        fullContextPipeline.ask(question)
+                    }
+                    AgentMode.RAG -> {
+                        println("[CHAT] → GENERIC/RAG path (legacy)")
+                        ragPipeline.ask(question)
+                    }
                 }
                 RoutingDecision.Irrelevant -> error("unreachable: Irrelevant handled above")
             }
